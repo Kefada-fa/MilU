@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Mileage Updater</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c2430; --muted:#667085; --line:#e4e7ec;
+          --ok:#127a3e; --okbg:#e7f6ec; --err:#b42318; --errbg:#fdecea; --warn:#9a6700; --warnbg:#fff4d6;
+          --info:#175cd3; --infobg:#e8f0fe; --brand:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:960px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:8px 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-weight:600; margin:0 0 6px; font-size:14px; }
+  select, input[type=file] { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:16px; background:#fff; }
+  .row { margin-bottom:14px; }
+  .check { display:flex; gap:8px; align-items:center; font-size:14px; }
+  .check input { width:18px; height:18px; }
+  button { background:var(--brand); color:#fff; border:0; border-radius:8px; padding:12px 18px; font-size:16px; font-weight:600; cursor:pointer; width:100%; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.secondary { background:#fff; color:var(--brand); border:1px solid var(--brand); width:auto; padding:8px 14px; font-size:14px; }
+  .banner { padding:10px 12px; border-radius:8px; font-size:14px; margin-bottom:14px; }
+  .banner.warn { background:var(--warnbg); color:var(--warn); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-bottom:12px; }
+  .stat { border-radius:10px; padding:10px 12px; }
+  .stat b { display:block; font-size:24px; }
+  .stat span { font-size:13px; }
+  .s-ok { background:var(--okbg); color:var(--ok); } .s-err { background:var(--errbg); color:var(--err); }
+  .s-warn { background:var(--warnbg); color:var(--warn); } .s-info { background:var(--infobg); color:var(--info); }
+  h2 { font-size:17px; margin:18px 0 8px; }
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.msg { white-space:normal; min-width:240px; }
+  th { background:#f9fafb; position:sticky; top:0; }
+  tr:last-child td { border-bottom:0; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .t-err { background:var(--errbg); color:var(--err); } .t-warn { background:var(--warnbg); color:var(--warn); }
+  .t-ok { background:var(--okbg); color:var(--ok); } .t-info { background:var(--infobg); color:var(--info); }
+  #status { font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
+  .actions { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Fleet Mileage Updater</h1>
+
+  <div class="card">
+    <div id="cfgBanner"></div>
+    <div class="row">
+      <label for="wh">Warehouse</label>
+      <select id="wh"></select>
+    </div>
+    <div class="row">
+      <label for="file">Mileage file (Excel with vehicle number + mileage)</label>
+      <input id="file" type="file" accept=".xlsx,.xls,.csv">
+    </div>
+    <div class="row check">
+      <input id="dry" type="checkbox">
+      <label for="dry" style="margin:0;font-weight:500">Preview only (check for errors, don't write to the sheet)</label>
+    </div>
+    <button id="go">Process &amp; Update</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+/* ============================ CONFIGURATION ============================
+   1. GOOGLE_CLIENT_ID: OAuth Web client ID from Google Cloud Console.
+   2. WAREHOUSES: display name -> Google Sheet ID (the long string in the sheet URL
+      between /d/ and /edit). "tab" is optional: leave "" to use the first tab.
+   3. Header names: the script finds the columns by these header names (case-insensitive).
+*/
+const CONFIG = {
+  GOOGLE_CLIENT_ID: "PASTE_YOUR_CLIENT_ID.apps.googleusercontent.com",
+  WAREHOUSES: {
+    "Warehouse 1": { sheetId: "PASTE_SHEET_ID_1", tab: "" },
+    "Warehouse 2": { sheetId: "PASTE_SHEET_ID_2", tab: "" },
+    "Warehouse 3": { sheetId: "PASTE_SHEET_ID_3", tab: "" },
+    "Warehouse 4": { sheetId: "PASTE_SHEET_ID_4", tab: "" },
+    "Warehouse 5": { sheetId: "PASTE_SHEET_ID_5", tab: "" },
+    "Warehouse 6": { sheetId: "PASTE_SHEET_ID_6", tab: "" },
+    "Warehouse 7": { sheetId: "PASTE_SHEET_ID_7", tab: "" }
+  },
+  VEHICLE_HEADERS: ["vehicle number", "vehicle no", "vehicle no.", "vehicle", "vehicle #", "plate", "plate number", "plate no"],
+  MILEAGE_HEADERS: ["mileage", "km", "kilometers", "odometer", "current mileage", "milage"],
+  MAX_INCREASE: 2000
+};
+
+/* ============================ HELPERS ============================ */
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const normVehicle = v => String(v ?? "").trim().toUpperCase().replace(/\s+/g, "");
+const normHeader = v => String(v ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+const fmt = n => (typeof n === "number" ? n.toLocaleString("en-US") : n);
+
+function parseMileage(v) {
+  if (typeof v === "number") return isFinite(v) ? v : NaN;
+  if (v === null || v === undefined) return NaN;
+  const s = String(v).trim().replace(/[,\s]/g, "");
+  if (s === "" || !/^-?\d+(\.\d+)?$/.test(s)) return NaN;
+  return parseFloat(s);
+}
+
+function colLetter(i) { // 0 -> A
+  let s = ""; i++;
+  while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); }
+  return s;
+}
+
+function findHeaderRow(rows, maxScan = 15) {
+  for (let r = 0; r < Math.min(rows.length, maxScan); r++) {
+    const row = rows[r] || [];
+    let vc = -1, mc = -1;
+    row.forEach((cell, c) => {
+      const h = normHeader(cell);
+      if (vc < 0 && CONFIG.VEHICLE_HEADERS.includes(h)) vc = c;
+      if (mc < 0 && CONFIG.MILEAGE_HEADERS.includes(h)) mc = c;
+    });
+    if (vc >= 0 && mc >= 0) return { headerRow: r, vehicleCol: vc, mileageCol: mc };
+  }
+  return null;
+}
+
+/* ============================ CORE LOGIC (pure) ============================ */
+/* Step 1: read uploaded rows, merge duplicates (keep highest mileage). */
+function readUpload(rows) {
+  const issues = [];      // problems found in the uploaded file itself
+  const duplicates = [];  // info about merged duplicates
+  let hdr = findHeaderRow(rows);
+  let start, vc, mc;
+  if (hdr) { start = hdr.headerRow + 1; vc = hdr.vehicleCol; mc = hdr.mileageCol; }
+  else { // fallback: columns A and B, skip first row if its mileage isn't numeric
+    vc = 0; mc = 1; start = isNaN(parseMileage((rows[0] || [])[1])) ? 1 : 0;
+  }
+  const map = new Map();
+  for (let r = start; r < rows.length; r++) {
+    const row = rows[r] || [];
+    const rawV = row[vc], rawM = row[mc];
+    const blankV = String(rawV ?? "").trim() === "", blankM = String(rawM ?? "").trim() === "";
+    if (blankV && blankM) continue;
+    const excelRow = r + 1;
+    if (blankV) { issues.push({ type: "Missing vehicle number", vehicle: "(blank)", uploadRow: excelRow, mileage: rawM, detail: `Row ${excelRow} of the uploaded file has a mileage (${rawM}) but no vehicle number.` }); continue; }
+    const m = parseMileage(rawM);
+    if (isNaN(m)) { issues.push({ type: "Invalid mileage in upload", vehicle: String(rawV).trim(), uploadRow: excelRow, mileage: rawM, detail: `Row ${excelRow} of the uploaded file: mileage "${rawM ?? ""}" is not a valid number.` }); continue; }
+    const key = normVehicle(rawV);
+    if (!map.has(key)) map.set(key, { display: String(rawV).trim(), entries: [] });
+    map.get(key).entries.push({ row: excelRow, mileage: m });
+  }
+  const vehicles = [];
+  for (const [key, v] of map) {
+    let best = v.entries[0];
+    v.entries.forEach(e => { if (e.mileage > best.mileage) best = e; });
+    vehicles.push({ key, display: v.display, mileage: best.mileage, uploadRow: best.row });
+    if (v.entries.length > 1) {
+      duplicates.push({ vehicle: v.display, kept: best.mileage,
+        detail: `Appeared ${v.entries.length} times in the upload (rows ${v.entries.map(e => e.row).join(", ")}) with mileages ${v.entries.map(e => fmt(e.mileage)).join(", ")}. Kept the highest: ${fmt(best.mileage)}.` });
+    }
+  }
+  return { vehicles, issues, duplicates, usedFallback: !hdr };
+}
+
+/* Step 2: compare against warehouse sheet values. */
+function compare(vehicles, sheetRows, tab) {
+  const hdr = findHeaderRow(sheetRows);
+  if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
+  const { headerRow, vehicleCol, mileageCol } = hdr;
+  const index = new Map();
+  for (let r = headerRow + 1; r < sheetRows.length; r++) {
+    const k = normVehicle((sheetRows[r] || [])[vehicleCol]);
+    if (!k) continue;
+    if (!index.has(k)) index.set(k, []);
+    index.get(k).push(r);
+  }
+  const updates = [], errors = [], unchanged = [], notes = [];
+  for (const v of vehicles) {
+    const hits = index.get(v.key);
+    if (!hits) { errors.push({ type: "Vehicle not found in warehouse", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display} (mileage ${fmt(v.mileage)}, upload row ${v.uploadRow}) does not exist in the warehouse sheet.` }); continue; }
+    if (hits.length > 1) { errors.push({ type: "Duplicate vehicle in warehouse", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
+    const r = hits[0], sheetRow = r + 1;
+    const rawOld = (sheetRows[r] || [])[mileageCol];
+    const hasOld = String(rawOld ?? "").trim() !== "";
+    const old = parseMileage(rawOld);
+    const cell = `${colLetter(mileageCol)}${sheetRow}`;
+    if (hasOld && isNaN(old)) { errors.push({ type: "Old mileage unreadable", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: current mileage in warehouse cell ${cell} is "${rawOld}" which is not a number. New mileage ${fmt(v.mileage)} was not written.` }); continue; }
+    if (!hasOld) { updates.push({ vehicle: v.display, old: "(empty)", next: v.mileage, diff: "-", cell, sheetRow, note: "Old mileage was empty, written without checks" }); continue; }
+    const diff = v.mileage - old;
+    if (diff < 0) { errors.push({ type: "Mileage lower than old", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is LOWER than current ${fmt(old)} in warehouse cell ${cell} (sheet row ${sheetRow}). Difference: ${fmt(diff)}.` }); continue; }
+    if (diff === 0) { unchanged.push({ vehicle: v.display, old, cell, detail: `Vehicle ${v.display}: new mileage equals the current mileage (${fmt(old)}). Nothing changed.` }); continue; }
+    if (diff > CONFIG.MAX_INCREASE) { errors.push({ type: "Mileage too high", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is ${fmt(diff)} higher than current ${fmt(old)} in warehouse cell ${cell} (sheet row ${sheetRow}). Maximum allowed increase is ${fmt(CONFIG.MAX_INCREASE)}.` }); continue; }
+    updates.push({ vehicle: v.display, old, next: v.mileage, diff, cell, sheetRow, note: "" });
+  }
+  return { updates, errors, unchanged, notes };
+}
+
+/* ============================ GOOGLE API ============================ */
+let accessToken = null, tokenClient = null, tokenExpiry = 0;
+
+function getToken() {
+  return new Promise((resolve, reject) => {
+    if (accessToken && Date.now() < tokenExpiry - 30000) return resolve(accessToken);
+    if (!window.google || !google.accounts) return reject(new Error("Google sign-in library did not load. Check your internet connection."));
+    if (!tokenClient) {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CONFIG.GOOGLE_CLIENT_ID,
+        scope: "https://www.googleapis.com/auth/spreadsheets",
+        callback: () => {}
+      });
+    }
+    tokenClient.callback = resp => {
+      if (resp.error) return reject(new Error("Google sign-in failed: " + resp.error));
+      accessToken = resp.access_token; tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
+      resolve(accessToken);
+    };
+    tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+  });
+}
+
+async function gfetch(url, opts = {}) {
+  const t = await getToken();
+  const res = await fetch(url, { ...opts, headers: { Authorization: "Bearer " + t, "Content-Type": "application/json", ...(opts.headers || {}) } });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); msg = j.error?.message || msg; } catch (e) {}
+    if (res.status === 400 && /not supported for this document/i.test(msg))
+      msg += " (This file is an uploaded .xlsx stored in Drive. Open it and use File > Save as Google Sheets.)";
+    throw new Error(`Google API error ${res.status}: ${msg}`);
+  }
+  return res.json();
+}
+
+async function loadWarehouse(w) {
+  let tab = w.tab;
+  if (!tab) {
+    const meta = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}?fields=sheets.properties.title`);
+    tab = meta.sheets[0].properties.title;
+  }
+  const q = "'" + tab.replace(/'/g, "''") + "'";
+  const data = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}/values/${encodeURIComponent(q)}?valueRenderOption=UNFORMATTED_VALUE`);
+  return { tab, q, rows: data.values || [] };
+}
+
+async function writeUpdates(w, q, updates) {
+  const CHUNK = 500;
+  for (let i = 0; i < updates.length; i += CHUNK) {
+    const part = updates.slice(i, i + CHUNK);
+    await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}/values:batchUpdate`, {
+      method: "POST",
+      body: JSON.stringify({ valueInputOption: "RAW", data: part.map(u => ({ range: `${q}!${u.cell}`, values: [[u.next]] })) })
+    });
+  }
+}
+
+/* ============================ UI ============================ */
+let lastReport = null;
+
+function init() {
+  const sel = $("wh");
+  Object.keys(CONFIG.WAREHOUSES).forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o); });
+  const notConfigured = CONFIG.GOOGLE_CLIENT_ID.startsWith("PASTE") ||
+    Object.values(CONFIG.WAREHOUSES).every(w => w.sheetId.startsWith("PASTE"));
+  if (notConfigured) $("cfgBanner").innerHTML = `<div class="banner warn">Setup needed: fill in GOOGLE_CLIENT_ID and the warehouse Sheet IDs in the CONFIG section at the top of the script.</div>`;
+  $("go").addEventListener("click", run);
+}
+
+function setStatus(t) { $("status").textContent = t; }
+
+async function readFile(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+}
+
+async function run() {
+  const file = $("file").files[0];
+  const name = $("wh").value;
+  const dry = $("dry").checked;
+  $("results").innerHTML = "";
+  if (!file) { setStatus("Please choose an Excel file first."); return; }
+  const w = CONFIG.WAREHOUSES[name];
+  $("go").disabled = true;
+  try {
+    setStatus("Reading uploaded file...");
+    const upRows = await readFile(file);
+    const up = readUpload(upRows);
+    if (!up.vehicles.length && !up.issues.length) throw new Error("No vehicle rows were found in the uploaded file.");
+
+    setStatus("Signing in to Google and loading " + name + "...");
+    const wh = await loadWarehouse(w);
+    const cmp = compare(up.vehicles, wh.rows, wh.tab);
+
+    if (!dry && cmp.updates.length) {
+      setStatus(`Writing ${cmp.updates.length} updates to ${name}...`);
+      await writeUpdates(w, wh.q, cmp.updates);
+    }
+    setStatus(dry ? "Preview finished. Nothing was written." : "Done.");
+    lastReport = { name, dry, up, cmp, fileName: file.name };
+    render(lastReport);
+  } catch (e) {
+    console.error(e);
+    setStatus("");
+    $("results").innerHTML = `<div class="card"><div class="banner" style="background:var(--errbg);color:var(--err)"><b>Stopped:</b> ${esc(e.message)}<br>Nothing was written to the sheet.</div></div>`;
+  } finally { $("go").disabled = false; }
+}
+
+function table(cols, rows) {
+  return `<div class="tablewrap"><table><thead><tr>${cols.map(c => `<th>${esc(c.h)}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ""}">${c.f(r)}</td>`).join("")}</tr>`).join("") + `</tbody></table></div>`;
+}
+
+function render(rep) {
+  const { up, cmp, name, dry } = rep;
+  const allErrors = [...up.issues, ...cmp.errors];
+  let h = `<div class="card"><h2 style="margin-top:0">${dry ? "Preview" : "Result"} for ${esc(name)}</h2>`;
+  if (up.usedFallback) h += `<div class="banner warn">Header names were not recognised in the uploaded file, so columns A (vehicle) and B (mileage) were used.</div>`;
+  h += `<div class="stats">
+    <div class="stat s-ok"><b>${cmp.updates.length}</b><span>${dry ? "Would be updated" : "Updated"}</span></div>
+    <div class="stat s-err"><b>${allErrors.length}</b><span>Errors</span></div>
+    <div class="stat s-warn"><b>${up.duplicates.length}</b><span>Duplicates merged</span></div>
+    <div class="stat s-info"><b>${cmp.unchanged.length}</b><span>Unchanged</span></div></div>
+    <div class="actions"><button class="secondary" id="dl">Download report (CSV)</button></div>`;
+
+  if (allErrors.length) {
+    h += `<h2>Errors - check these</h2>` + table([
+      { h: "Type", f: r => `<span class="tag t-err">${esc(r.type)}</span>` },
+      { h: "Vehicle", f: r => esc(r.vehicle) },
+      { h: "Details", f: r => esc(r.detail), cls: "msg" }
+    ], allErrors);
+  } else h += `<div class="banner" style="background:var(--okbg);color:var(--ok)">No errors.</div>`;
+
+  if (up.duplicates.length) h += `<h2>Duplicates in upload (highest kept)</h2>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], up.duplicates);
+
+  if (cmp.updates.length) h += `<h2>${dry ? "Would be updated" : "Updated"}</h2>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Old", f: r => esc(fmt(r.old)) }, { h: "New", f: r => esc(fmt(r.next)) },
+    { h: "Diff", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" }], cmp.updates);
+
+  if (cmp.unchanged.length) h += `<h2>Unchanged (same mileage)</h2>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], cmp.unchanged);
+
+  h += `</div>`;
+  $("results").innerHTML = h;
+  $("dl").addEventListener("click", downloadReport);
+}
+
+function downloadReport() {
+  const { up, cmp, name, dry } = lastReport;
+  const rows = [["Category", "Type", "Vehicle", "Details"]];
+  [...up.issues, ...cmp.errors].forEach(e => rows.push(["ERROR", e.type, e.vehicle, e.detail]));
+  up.duplicates.forEach(d => rows.push(["DUPLICATE", "Merged", d.vehicle, d.detail]));
+  cmp.updates.forEach(u => rows.push([dry ? "WOULD UPDATE" : "UPDATED", "", u.vehicle, `${u.old} -> ${u.next} (diff ${u.diff}) cell ${u.cell} ${u.note}`]));
+  cmp.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.detail]));
+  const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv" }));
+  a.download = `mileage-report-${name.replace(/\W+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+
+init();
+</script>
+</body>
+</html>
