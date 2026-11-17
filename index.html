@@ -12,19 +12,24 @@
           --info:#175cd3; --infobg:#e8f0fe; --brand:#1d4ed8; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
-  .wrap { max-width:960px; margin:0 auto; padding:16px; }
+  .wrap { max-width:1000px; margin:0 auto; padding:16px; }
   h1 { font-size:22px; margin:8px 0 16px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
   label { display:block; font-weight:600; margin:0 0 6px; font-size:14px; }
-  select, input[type=file] { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:16px; background:#fff; }
+  select, input[type=file], input[type=text] { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; font-size:16px; background:#fff; }
   .row { margin-bottom:14px; }
   .check { display:flex; gap:8px; align-items:center; font-size:14px; }
   .check input { width:18px; height:18px; }
   button { background:var(--brand); color:#fff; border:0; border-radius:8px; padding:12px 18px; font-size:16px; font-weight:600; cursor:pointer; width:100%; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   button.secondary { background:#fff; color:var(--brand); border:1px solid var(--brand); width:auto; padding:8px 14px; font-size:14px; }
-  .banner { padding:10px 12px; border-radius:8px; font-size:14px; margin-bottom:14px; }
+  button.small { width:auto; padding:6px 12px; font-size:13px; background:#b7791f; }
+  .searchrow { display:flex; gap:8px; }
+  .searchrow button { width:auto; white-space:nowrap; }
+  .banner { padding:10px 12px; border-radius:8px; font-size:14px; margin:10px 0; }
   .banner.warn { background:var(--warnbg); color:var(--warn); }
+  .banner.err { background:var(--errbg); color:var(--err); }
+  .banner.ok { background:var(--okbg); color:var(--ok); }
   .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-bottom:12px; }
   .stat { border-radius:10px; padding:10px 12px; }
   .stat b { display:block; font-size:24px; }
@@ -32,6 +37,7 @@
   .s-ok { background:var(--okbg); color:var(--ok); } .s-err { background:var(--errbg); color:var(--err); }
   .s-warn { background:var(--warnbg); color:var(--warn); } .s-info { background:var(--infobg); color:var(--info); }
   h2 { font-size:17px; margin:18px 0 8px; }
+  h3 { font-size:15px; margin:14px 0 6px; }
   .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:8px; }
   table { border-collapse:collapse; width:100%; font-size:14px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
@@ -41,16 +47,33 @@
   .tag { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
   .t-err { background:var(--errbg); color:var(--err); } .t-warn { background:var(--warnbg); color:var(--warn); }
   .t-ok { background:var(--okbg); color:var(--ok); } .t-info { background:var(--infobg); color:var(--info); }
-  #status { font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
-  .actions { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
+  .ybox { background:#fffbea; border:1px solid #f3d27a; border-radius:10px; padding:12px; margin-top:18px; }
+  .ybox h2 { margin-top:0; color:var(--warn); }
+  .ybox .tablewrap { background:#fff; }
+  .hit { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:10px; }
+  .hit h3 { margin:0 0 8px; }
+  .status { font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
+  .actions { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; align-items:center; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Fleet Mileage Updater</h1>
+  <div id="cfgBanner"></div>
 
+  <!-- ===== Vehicle search ===== -->
   <div class="card">
-    <div id="cfgBanner"></div>
+    <label for="q">Search a vehicle</label>
+    <div class="searchrow">
+      <input id="q" type="text" placeholder="Vehicle number" autocomplete="off">
+      <button id="sbtn">Search</button>
+    </div>
+    <div id="sstatus" class="status"></div>
+    <div id="sresults"></div>
+  </div>
+
+  <!-- ===== Work station ===== -->
+  <div class="card">
     <div class="row">
       <label for="wh">Warehouse</label>
       <select id="wh"></select>
@@ -64,7 +87,7 @@
       <label for="dry" style="margin:0;font-weight:500">Preview only (check for errors, don't write to the sheet)</label>
     </div>
     <button id="go">Process &amp; Update</button>
-    <div id="status"></div>
+    <div id="status" class="status"></div>
   </div>
 
   <div id="results"></div>
@@ -73,9 +96,11 @@
 <script>
 /* ============================ CONFIGURATION ============================
    1. GOOGLE_CLIENT_ID: OAuth Web client ID from Google Cloud Console.
-   2. WAREHOUSES: display name -> Google Sheet ID (the long string in the sheet URL
-      between /d/ and /edit). "tab" is optional: leave "" to use the first tab.
-   3. Header names: the script finds the columns by these header names (case-insensitive).
+   2. WAREHOUSES: the 7 sheets that can be READ and UPDATED (shown in the dropdown).
+      display name -> Google Sheet ID. "tab" is optional: leave "" to use the first tab.
+   3. READ_ONLY_SHEETS: sheets that are only READ (search + "wrong warehouse" lookup).
+      They never appear in the dropdown and are never written to.
+   4. Header names: columns are found by these header names (case-insensitive).
 */
 const CONFIG = {
   GOOGLE_CLIENT_ID: "898500084346-jfu3c4fdnqbg08q7qgq7o9s43361iso3.apps.googleusercontent.com",
@@ -87,6 +112,9 @@ const CONFIG = {
     "Barouk": { sheetId: "1kPSwmpMki3ZxWdAQVsr8zDsT5z76Znm2eu0b-evSpM8", tab: "" },
     "Hazmieh": { sheetId: "1zDKmVgewox6LzJLKvCBSAPaB6n4-lGKhxey7u8jq3g4", tab: "" },
     "Akbieh": { sheetId: "1q1wFGkoyVpAW402NrhyzWm8XotxhFLoMPv6W36I2c5E", tab: "" }
+  },
+  READ_ONLY_SHEETS: {
+    "Read-only sheet": { sheetId: "PASTE_READONLY_SHEET_ID", tab: "" }
   },
   VEHICLE_HEADERS: ["vehicle number", "vehicle no", "vehicle no.", "vehicle", "vehicle #", "plate", "plate number", "plate no"],
   MILEAGE_HEADERS: ["mileage", "km", "kilometers", "odometer", "current mileage", "milage"],
@@ -114,7 +142,8 @@ function colLetter(i) { // 0 -> A
   return s;
 }
 
-function findHeaderRow(rows, maxScan = 15) {
+/* needMileage=false: only the vehicle column is required (used for search / read-only sheets) */
+function findHeaderRow(rows, needMileage = true, maxScan = 15) {
   for (let r = 0; r < Math.min(rows.length, maxScan); r++) {
     const row = rows[r] || [];
     let vc = -1, mc = -1;
@@ -123,22 +152,31 @@ function findHeaderRow(rows, maxScan = 15) {
       if (vc < 0 && CONFIG.VEHICLE_HEADERS.includes(h)) vc = c;
       if (mc < 0 && CONFIG.MILEAGE_HEADERS.includes(h)) mc = c;
     });
-    if (vc >= 0 && mc >= 0) return { headerRow: r, vehicleCol: vc, mileageCol: mc };
+    if (vc >= 0 && (!needMileage || mc >= 0)) return { headerRow: r, vehicleCol: vc, mileageCol: mc };
   }
   return null;
+}
+
+function buildIndex(rows, hdr) {
+  const index = new Map();
+  for (let r = hdr.headerRow + 1; r < rows.length; r++) {
+    const k = normVehicle((rows[r] || [])[hdr.vehicleCol]);
+    if (!k) continue;
+    if (!index.has(k)) index.set(k, []);
+    index.get(k).push(r);
+  }
+  return index;
 }
 
 /* ============================ CORE LOGIC (pure) ============================ */
 /* Step 1: read uploaded rows, merge duplicates (keep highest mileage). */
 function readUpload(rows) {
-  const issues = [];      // problems found in the uploaded file itself
-  const duplicates = [];  // info about merged duplicates
+  const issues = [];
+  const duplicates = [];
   let hdr = findHeaderRow(rows);
   let start, vc, mc;
   if (hdr) { start = hdr.headerRow + 1; vc = hdr.vehicleCol; mc = hdr.mileageCol; }
-  else { // fallback: columns A and B, skip first row if its mileage isn't numeric
-    vc = 0; mc = 1; start = isNaN(parseMileage((rows[0] || [])[1])) ? 1 : 0;
-  }
+  else { vc = 0; mc = 1; start = isNaN(parseMileage((rows[0] || [])[1])) ? 1 : 0; }
   const map = new Map();
   for (let r = start; r < rows.length; r++) {
     const row = rows[r] || [];
@@ -166,37 +204,49 @@ function readUpload(rows) {
   return { vehicles, issues, duplicates, usedFallback: !hdr };
 }
 
-/* Step 2: compare against warehouse sheet values. */
-function compare(vehicles, sheetRows, tab) {
+/* Rules: new must be higher than old, and not more than MAX_INCREASE above it. */
+function check(newM, rawOld) {
+  const has = String(rawOld ?? "").trim() !== "";
+  if (!has) return { st: "empty" };
+  const old = parseMileage(rawOld);
+  if (isNaN(old)) return { st: "unreadable", raw: rawOld };
+  const diff = newM - old;
+  if (diff < 0) return { st: "lower", old, diff };
+  if (diff === 0) return { st: "same", old, diff };
+  if (diff > CONFIG.MAX_INCREASE) return { st: "high", old, diff };
+  return { st: "ok", old, diff };
+}
+
+function problemText(v, c, cell, sheetRow, where) {
+  const w = where ? ` in "${where}"` : " in the warehouse";
+  if (c.st === "unreadable") return `Vehicle ${v.display}: current mileage${w} cell ${cell} is "${c.raw}" which is not a number. New mileage ${fmt(v.mileage)} was not written.`;
+  if (c.st === "lower") return `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is LOWER than current ${fmt(c.old)}${w} cell ${cell} (sheet row ${sheetRow}). Difference: ${fmt(c.diff)}.`;
+  if (c.st === "high") return `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is ${fmt(c.diff)} higher than current ${fmt(c.old)}${w} cell ${cell} (sheet row ${sheetRow}). Maximum allowed increase is ${fmt(CONFIG.MAX_INCREASE)}.`;
+  return "";
+}
+
+const ERR_TYPE = { unreadable: "Old mileage unreadable", lower: "Mileage lower than old", high: "Mileage too high" };
+
+/* Step 2: compare against one warehouse sheet's values (UNFORMATTED). */
+function compare(vehicles, sheetRows) {
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
-  const { headerRow, vehicleCol, mileageCol } = hdr;
-  const index = new Map();
-  for (let r = headerRow + 1; r < sheetRows.length; r++) {
-    const k = normVehicle((sheetRows[r] || [])[vehicleCol]);
-    if (!k) continue;
-    if (!index.has(k)) index.set(k, []);
-    index.get(k).push(r);
-  }
-  const updates = [], errors = [], unchanged = [], notes = [];
+  const { vehicleCol, mileageCol } = hdr;
+  const index = buildIndex(sheetRows, hdr);
+  const updates = [], errors = [], unchanged = [], notFound = [];
   for (const v of vehicles) {
     const hits = index.get(v.key);
-    if (!hits) { errors.push({ type: "Vehicle not found in warehouse", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display} (mileage ${fmt(v.mileage)}, upload row ${v.uploadRow}) does not exist in the warehouse sheet.` }); continue; }
-    if (hits.length > 1) { errors.push({ type: "Duplicate vehicle in warehouse", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
+    if (!hits) { notFound.push(v); continue; }
+    if (hits.length > 1) { errors.push({ key: v.key, type: "Duplicate vehicle in warehouse", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
     const r = hits[0], sheetRow = r + 1;
-    const rawOld = (sheetRows[r] || [])[mileageCol];
-    const hasOld = String(rawOld ?? "").trim() !== "";
-    const old = parseMileage(rawOld);
     const cell = `${colLetter(mileageCol)}${sheetRow}`;
-    if (hasOld && isNaN(old)) { errors.push({ type: "Old mileage unreadable", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: current mileage in warehouse cell ${cell} is "${rawOld}" which is not a number. New mileage ${fmt(v.mileage)} was not written.` }); continue; }
-    if (!hasOld) { updates.push({ vehicle: v.display, old: "(empty)", next: v.mileage, diff: "-", cell, sheetRow, note: "Old mileage was empty, written without checks" }); continue; }
-    const diff = v.mileage - old;
-    if (diff < 0) { errors.push({ type: "Mileage lower than old", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is LOWER than current ${fmt(old)} in warehouse cell ${cell} (sheet row ${sheetRow}). Difference: ${fmt(diff)}.` }); continue; }
-    if (diff === 0) { unchanged.push({ vehicle: v.display, old, cell, detail: `Vehicle ${v.display}: new mileage equals the current mileage (${fmt(old)}). Nothing changed.` }); continue; }
-    if (diff > CONFIG.MAX_INCREASE) { errors.push({ type: "Mileage too high", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: `Vehicle ${v.display}: new mileage ${fmt(v.mileage)} (upload row ${v.uploadRow}) is ${fmt(diff)} higher than current ${fmt(old)} in warehouse cell ${cell} (sheet row ${sheetRow}). Maximum allowed increase is ${fmt(CONFIG.MAX_INCREASE)}.` }); continue; }
-    updates.push({ vehicle: v.display, old, next: v.mileage, diff, cell, sheetRow, note: "" });
+    const c = check(v.mileage, (sheetRows[r] || [])[mileageCol]);
+    if (c.st === "empty") { updates.push({ key: v.key, vehicle: v.display, old: "(empty)", next: v.mileage, diff: "-", cell, sheetRow, note: "Old mileage was empty, written without checks" }); continue; }
+    if (c.st === "same") { unchanged.push({ key: v.key, vehicle: v.display, old: c.old, cell, detail: `Vehicle ${v.display}: new mileage equals the current mileage (${fmt(c.old)}). Nothing changed.` }); continue; }
+    if (c.st === "ok") { updates.push({ key: v.key, vehicle: v.display, old: c.old, next: v.mileage, diff: c.diff, cell, sheetRow, note: "" }); continue; }
+    errors.push({ key: v.key, type: ERR_TYPE[c.st], vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage, detail: problemText(v, c, cell, sheetRow, "") });
   }
-  return { updates, errors, unchanged, notes };
+  return { updates, errors, unchanged, notFound };
 }
 
 /* ============================ GOOGLE API ============================ */
@@ -235,42 +285,117 @@ async function gfetch(url, opts = {}) {
   return res.json();
 }
 
-async function loadWarehouse(w) {
-  let tab = w.tab;
+async function loadSheet(cfg, render = "UNFORMATTED_VALUE") {
+  let tab = cfg.tab;
   if (!tab) {
-    const meta = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}?fields=sheets.properties.title`);
+    const meta = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}?fields=sheets.properties.title`);
     tab = meta.sheets[0].properties.title;
   }
   const q = "'" + tab.replace(/'/g, "''") + "'";
-  const data = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}/values/${encodeURIComponent(q)}?valueRenderOption=UNFORMATTED_VALUE`);
+  const data = await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values/${encodeURIComponent(q)}?valueRenderOption=${render}`);
   return { tab, q, rows: data.values || [] };
 }
 
-async function writeUpdates(w, q, updates) {
+async function writeUpdates(cfg, q, updates) {
   const CHUNK = 500;
   for (let i = 0; i < updates.length; i += CHUNK) {
     const part = updates.slice(i, i + CHUNK);
-    await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${w.sheetId}/values:batchUpdate`, {
+    await gfetch(`https://sheets.googleapis.com/v4/spreadsheets/${cfg.sheetId}/values:batchUpdate`, {
       method: "POST",
       body: JSON.stringify({ valueInputOption: "RAW", data: part.map(u => ({ range: `${q}!${u.cell}`, values: [[u.next]] })) })
     });
   }
 }
 
+/* All configured sheets: 7 read/write + read-only ones. Unconfigured (PASTE...) ones are skipped. */
+function allSheets() {
+  const list = [];
+  for (const [name, cfg] of Object.entries(CONFIG.WAREHOUSES)) list.push({ name, cfg, readOnly: false });
+  for (const [name, cfg] of Object.entries(CONFIG.READ_ONLY_SHEETS || {})) list.push({ name, cfg, readOnly: true });
+  return list.filter(s => s.cfg.sheetId && !s.cfg.sheetId.startsWith("PASTE"));
+}
+
+/* Load several sheets in parallel; a failing sheet does not stop the others. */
+async function scanSheets(sheets, render, needMileage) {
+  await getToken(); // sign in once, before the parallel loads
+  return Promise.all(sheets.map(async s => {
+    try {
+      const d = await loadSheet(s.cfg, render);
+      const hdr = findHeaderRow(d.rows, needMileage && !s.readOnly);
+      if (!hdr) throw new Error("could not find the vehicle number" + (needMileage && !s.readOnly ? " and mileage" : "") + " column header (looked in the first 15 rows)");
+      return { s, d, hdr, index: buildIndex(d.rows, hdr) };
+    } catch (e) { return { s, error: e.message }; }
+  }));
+}
+
 /* ============================ UI ============================ */
-let lastReport = null;
+let lastReport = null;   // { name, dry, up, cmp, wrong, failedSheets, fileName }
+let wrong = [];          // wrong-warehouse items (see run())
 
 function init() {
   const sel = $("wh");
   Object.keys(CONFIG.WAREHOUSES).forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o); });
   const notConfigured = CONFIG.GOOGLE_CLIENT_ID.startsWith("PASTE") ||
     Object.values(CONFIG.WAREHOUSES).every(w => w.sheetId.startsWith("PASTE"));
-  if (notConfigured) $("cfgBanner").innerHTML = `<div class="banner warn">Setup needed: fill in GOOGLE_CLIENT_ID and the warehouse Sheet IDs in the CONFIG section at the top of the script.</div>`;
+  if (notConfigured) $("cfgBanner").innerHTML = `<div class="banner warn">Setup needed: fill in GOOGLE_CLIENT_ID and the Sheet IDs in the CONFIG section at the top of the script.</div>`;
   $("go").addEventListener("click", run);
+  $("sbtn").addEventListener("click", runSearch);
+  $("q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
+  $("results").addEventListener("click", onResultsClick);
 }
 
 function setStatus(t) { $("status").textContent = t; }
 
+function table(cols, rows) {
+  return `<div class="tablewrap"><table><thead><tr>${cols.map(c => `<th>${esc(c.h)}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ""}">${c.f(r)}</td>`).join("")}</tr>`).join("") + `</tbody></table></div>`;
+}
+
+/* ---------- Search ---------- */
+async function runSearch() {
+  const raw = $("q").value.trim();
+  const key = normVehicle(raw);
+  $("sresults").innerHTML = "";
+  if (!key) { $("sstatus").textContent = "Type a vehicle number first."; return; }
+  const sheets = allSheets();
+  if (!sheets.length) { $("sstatus").textContent = "No sheets are configured yet (see CONFIG)."; return; }
+  $("sbtn").disabled = true;
+  try {
+    $("sstatus").textContent = `Searching ${sheets.length} sheets...`;
+    const scans = await scanSheets(sheets, "FORMATTED_VALUE", false);
+    $("sstatus").textContent = "";
+    renderSearch(scans, raw, key);
+  } catch (e) {
+    $("sstatus").textContent = "";
+    $("sresults").innerHTML = `<div class="banner err"><b>Search stopped:</b> ${esc(e.message)}</div>`;
+  } finally { $("sbtn").disabled = false; }
+}
+
+function renderSearch(scans, raw, key) {
+  const failed = scans.filter(x => x.error);
+  const hits = [];
+  scans.forEach(sc => { if (sc.error) return; (sc.index.get(key) || []).forEach(r => hits.push({ sc, r })); });
+  let html = "";
+  if (!hits.length) html += `<div class="banner err">Vehicle <b>${esc(raw)}</b> was not found in any sheet.</div>`;
+  else {
+    html += `<div class="banner ok">Found <b>${esc(raw)}</b> in ${hits.length} place${hits.length > 1 ? "s" : ""}.</div>`;
+    hits.forEach(({ sc, r }) => {
+      const head = sc.d.rows[sc.hdr.headerRow] || [], row = sc.d.rows[r] || [];
+      const n = Math.max(head.length, row.length), pairs = [];
+      for (let c = 0; c < n; c++) {
+        const hv = String(head[c] ?? "").trim(), val = row[c];
+        if (hv === "" && String(val ?? "").trim() === "") continue;
+        pairs.push({ h: hv || "Column " + colLetter(c), v: val ?? "" });
+      }
+      html += `<div class="hit"><h3>${esc(sc.s.name)} ${sc.s.readOnly ? '<span class="tag t-info">read-only</span>' : ""} <span style="font-weight:400;color:var(--muted)">- sheet row ${r + 1}</span></h3>` +
+        table([{ h: "Column", f: p => esc(p.h) }, { h: "Value", f: p => (String(p.v).trim() === "" ? "<span style='color:var(--muted)'>-</span>" : esc(p.v)), cls: "msg" }], pairs) + `</div>`;
+    });
+  }
+  if (failed.length) html += `<div class="banner warn"><b>Could not check:</b> ${failed.map(f => `${esc(f.s.name)} (${esc(f.error)})`).join("; ")}. The result above may be incomplete.</div>`;
+  $("sresults").innerHTML = html;
+}
+
+/* ---------- Upload & update ---------- */
 async function readFile(file) {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
@@ -283,6 +408,7 @@ async function run() {
   const name = $("wh").value;
   const dry = $("dry").checked;
   $("results").innerHTML = "";
+  wrong = [];
   if (!file) { setStatus("Please choose an Excel file first."); return; }
   const w = CONFIG.WAREHOUSES[name];
   $("go").disabled = true;
@@ -293,36 +419,79 @@ async function run() {
     if (!up.vehicles.length && !up.issues.length) throw new Error("No vehicle rows were found in the uploaded file.");
 
     setStatus("Signing in to Google and loading " + name + "...");
-    const wh = await loadWarehouse(w);
-    const cmp = compare(up.vehicles, wh.rows, wh.tab);
+    const wh = await loadSheet(w);
+    const cmp = compare(up.vehicles, wh.rows);
 
     if (!dry && cmp.updates.length) {
       setStatus(`Writing ${cmp.updates.length} updates to ${name}...`);
       await writeUpdates(w, wh.q, cmp.updates);
     }
+
+    /* Vehicles not in this warehouse: look for them in all the other sheets */
+    let failedSheets = [];
+    if (cmp.notFound.length) {
+      setStatus(`Looking for ${cmp.notFound.length} vehicle(s) in the other sheets...`);
+      const others = allSheets().filter(s => s.name !== name);
+      const scans = await scanSheets(others, "UNFORMATTED_VALUE", true);
+      failedSheets = scans.filter(x => x.error).map(x => ({ name: x.s.name, error: x.error }));
+      for (const v of cmp.notFound) {
+        let found = false;
+        for (const sc of scans) {
+          if (sc.error) continue;
+          const hits = sc.index.get(v.key);
+          if (!hits) continue;
+          found = true;
+          for (const r of hits) {
+            const item = { key: v.key, vehicle: v.display, mileage: v.mileage, uploadRow: v.uploadRow, sheetName: sc.s.name, readOnly: sc.s.readOnly, sheetRow: r + 1, old: "", cell: "", status: "", msg: "", ambiguous: false };
+            const mc = sc.hdr.mileageCol;
+            if (mc >= 0) { item.cell = `${colLetter(mc)}${r + 1}`; }
+            const rawOld = mc >= 0 ? (sc.d.rows[r] || [])[mc] : undefined;
+            if (sc.s.readOnly) {
+              item.status = "readonly"; item.old = rawOld ?? "";
+              item.msg = `Found in read-only sheet "${sc.s.name}" (row ${r + 1}${mc >= 0 ? ", current mileage " + fmt(rawOld ?? "") : ""}). It cannot be updated from this site.`;
+            } else {
+              const c = check(v.mileage, rawOld);
+              item.old = c.st === "empty" ? "(empty)" : (c.old ?? c.raw);
+              if (c.st === "ok") { item.status = "actionable"; item.msg = `Would change ${fmt(c.old)} to ${fmt(v.mileage)} (+${fmt(c.diff)}) in cell ${item.cell}.`; }
+              else if (c.st === "empty") { item.status = "actionable"; item.msg = `Current mileage is empty; ${fmt(v.mileage)} would be written to cell ${item.cell}.`; }
+              else if (c.st === "same") { item.status = "same"; item.msg = `Mileage equals the current one (${fmt(c.old)}). Nothing to update.`; }
+              else { item.status = "blocked"; item.msg = problemText(v, c, item.cell, r + 1, sc.s.name); }
+            }
+            wrong.push(item);
+          }
+        }
+        if (!found) {
+          const note = failedSheets.length ? ` Note: these sheets could not be checked: ${failedSheets.map(f => f.name).join(", ")}.` : "";
+          cmp.errors.push({ key: v.key, type: "Vehicle not available", vehicle: v.display, uploadRow: v.uploadRow, mileage: v.mileage,
+            detail: `Vehicle ${v.display} (mileage ${fmt(v.mileage)}, upload row ${v.uploadRow}) was not found in ${name} nor in any other sheet.${note}` });
+        }
+      }
+      /* a vehicle that could be updated in more than one sheet must be chosen by hand */
+      const counts = {};
+      wrong.filter(i => i.status === "actionable").forEach(i => counts[i.key] = (counts[i.key] || 0) + 1);
+      wrong.forEach(i => { if (i.status === "actionable" && counts[i.key] > 1) { i.ambiguous = true; i.msg += " This vehicle exists in more than one sheet - choose the right one."; } });
+    }
+
     setStatus(dry ? "Preview finished. Nothing was written." : "Done.");
-    lastReport = { name, dry, up, cmp, fileName: file.name };
+    lastReport = { name, dry, up, cmp, failedSheets, fileName: file.name };
     render(lastReport);
   } catch (e) {
     console.error(e);
     setStatus("");
-    $("results").innerHTML = `<div class="card"><div class="banner" style="background:var(--errbg);color:var(--err)"><b>Stopped:</b> ${esc(e.message)}<br>Nothing was written to the sheet.</div></div>`;
+    $("results").innerHTML = `<div class="card"><div class="banner err"><b>Stopped:</b> ${esc(e.message)}<br>Nothing was written to the sheet.</div></div>`;
   } finally { $("go").disabled = false; }
 }
 
-function table(cols, rows) {
-  return `<div class="tablewrap"><table><thead><tr>${cols.map(c => `<th>${esc(c.h)}</th>`).join("")}</tr></thead><tbody>` +
-    rows.map(r => `<tr>${cols.map(c => `<td class="${c.cls || ""}">${c.f(r)}</td>`).join("")}</tr>`).join("") + `</tbody></table></div>`;
-}
-
 function render(rep) {
-  const { up, cmp, name, dry } = rep;
+  const { up, cmp, name, dry, failedSheets } = rep;
   const allErrors = [...up.issues, ...cmp.errors];
   let h = `<div class="card"><h2 style="margin-top:0">${dry ? "Preview" : "Result"} for ${esc(name)}</h2>`;
   if (up.usedFallback) h += `<div class="banner warn">Header names were not recognised in the uploaded file, so columns A (vehicle) and B (mileage) were used.</div>`;
+  if (failedSheets.length) h += `<div class="banner warn"><b>Could not check these sheets for wrong-warehouse matches:</b> ${failedSheets.map(f => `${esc(f.name)} (${esc(f.error)})`).join("; ")}.</div>`;
   h += `<div class="stats">
     <div class="stat s-ok"><b>${cmp.updates.length}</b><span>${dry ? "Would be updated" : "Updated"}</span></div>
     <div class="stat s-err"><b>${allErrors.length}</b><span>Errors</span></div>
+    <div class="stat s-warn"><b id="wrongCount">${wrong.length}</b><span>Wrong warehouse</span></div>
     <div class="stat s-warn"><b>${up.duplicates.length}</b><span>Duplicates merged</span></div>
     <div class="stat s-info"><b>${cmp.unchanged.length}</b><span>Unchanged</span></div></div>
     <div class="actions"><button class="secondary" id="dl">Download report (CSV)</button></div>`;
@@ -333,12 +502,14 @@ function render(rep) {
       { h: "Vehicle", f: r => esc(r.vehicle) },
       { h: "Details", f: r => esc(r.detail), cls: "msg" }
     ], allErrors);
-  } else h += `<div class="banner" style="background:var(--okbg);color:var(--ok)">No errors.</div>`;
+  } else h += `<div class="banner ok">No errors.</div>`;
+
+  h += `<div id="wrongBox"></div>`;
 
   if (up.duplicates.length) h += `<h2>Duplicates in upload (highest kept)</h2>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], up.duplicates);
 
-  if (cmp.updates.length) h += `<h2>${dry ? "Would be updated" : "Updated"}</h2>` + table([
+  if (cmp.updates.length) h += `<h2>${dry ? "Would be updated" : "Updated"} in ${esc(name)}</h2>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Old", f: r => esc(fmt(r.old)) }, { h: "New", f: r => esc(fmt(r.next)) },
     { h: "Diff", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" }], cmp.updates);
 
@@ -348,12 +519,84 @@ function render(rep) {
   h += `</div>`;
   $("results").innerHTML = h;
   $("dl").addEventListener("click", downloadReport);
+  renderWrong();
+}
+
+/* ---------- Yellow "Wrong warehouse" section ---------- */
+function renderWrong() {
+  const box = $("wrongBox");
+  if (!box) return;
+  const dry = lastReport && lastReport.dry;
+  const wc = $("wrongCount"); if (wc) wc.textContent = wrong.length;
+  if (!wrong.length) { box.innerHTML = ""; return; }
+  const pending = wrong.map((it, i) => ({ it, i })).filter(x => x.it.status === "actionable" && !x.it.ambiguous);
+  let h = `<div class="ybox"><h2>Wrong warehouse</h2>
+    <p style="margin:0 0 10px;font-size:14px">These vehicles are not in the selected warehouse but exist in another sheet. Nothing is changed there unless you press <b>Yes, update</b>.</p>`;
+  if (dry) h += `<div class="banner warn">Preview mode is on: updating is disabled. Untick "Preview only" and run again to update.</div>`;
+  if (pending.length > 1) h += `<div class="actions"><button class="small" data-act="all" ${dry ? "disabled" : ""}>Yes, update all (${pending.length})</button></div>`;
+  h += table([
+    { h: "Vehicle", f: r => esc(r.vehicle) },
+    { h: "Found in", f: r => esc(r.sheetName) + (r.readOnly ? ' <span class="tag t-info">read-only</span>' : "") },
+    { h: "Sheet row", f: r => esc(r.sheetRow) },
+    { h: "Current", f: r => esc(fmt(r.old)) },
+    { h: "New", f: r => esc(fmt(r.mileage)) },
+    { h: "Details", f: r => esc(r.msg), cls: "msg" },
+    { h: "Update?", f: r => actionCell(r, dry) }
+  ], wrong.map((it, i) => Object.assign({}, it, { idx: i })));
+  h += `</div>`;
+  box.innerHTML = h;
+}
+
+function actionCell(r, dry) {
+  switch (r.status) {
+    case "actionable": return `<button class="small" data-act="one" data-idx="${r.idx}" ${dry ? "disabled" : ""}>Yes, update</button>`;
+    case "blocked": return `<span class="tag t-err">Cannot update</span>`;
+    case "same": return `<span class="tag t-info">Unchanged</span>`;
+    case "readonly": return `<span class="tag t-info">Read-only</span>`;
+    case "done": return `<span class="tag t-ok">Updated</span>`;
+    case "failed": return `<span class="tag t-err">Failed</span>`;
+  }
+  return "";
+}
+
+function onResultsClick(e) {
+  const b = e.target.closest("button[data-act]");
+  if (!b || b.disabled) return;
+  if (b.dataset.act === "one") confirmUpdate([Number(b.dataset.idx)]);
+  if (b.dataset.act === "all") confirmUpdate(wrong.map((it, i) => i).filter(i => wrong[i].status === "actionable" && !wrong[i].ambiguous));
+}
+
+/* Only runs after the person pressed "Yes". Re-reads the sheet and re-checks the rules before writing. */
+async function confirmUpdate(idxs) {
+  const items = idxs.map(i => wrong[i]).filter(it => it && it.status === "actionable");
+  if (!items.length) return;
+  $("wrongBox").querySelectorAll("button").forEach(b => b.disabled = true);
+  const bySheet = new Map();
+  items.forEach(it => { if (!bySheet.has(it.sheetName)) bySheet.set(it.sheetName, []); bySheet.get(it.sheetName).push(it); });
+  for (const [sn, its] of bySheet) {
+    try {
+      const s = allSheets().find(x => x.name === sn && !x.readOnly);
+      if (!s) throw new Error("This sheet is read-only or not configured, so it cannot be updated.");
+      const d = await loadSheet(s.cfg);
+      const res = compare(its.map(it => ({ key: it.key, display: it.vehicle, mileage: it.mileage, uploadRow: it.uploadRow })), d.rows);
+      if (res.updates.length) await writeUpdates(s.cfg, d.q, res.updates);
+      for (const it of its) {
+        const u = res.updates.find(x => x.key === it.key), er = res.errors.find(x => x.key === it.key), sm = res.unchanged.find(x => x.key === it.key);
+        if (u) { it.status = "done"; it.msg = `Updated ${fmt(u.old)} to ${fmt(u.next)} in "${sn}", cell ${u.cell}.`; }
+        else if (er) { it.status = "failed"; it.msg = er.detail; }
+        else if (sm) { it.status = "same"; it.msg = sm.detail; }
+        else { it.status = "failed"; it.msg = `Vehicle ${it.vehicle} was no longer found in "${sn}".`; }
+      }
+    } catch (e) { its.forEach(it => { it.status = "failed"; it.msg = e.message; }); }
+  }
+  renderWrong();
 }
 
 function downloadReport() {
   const { up, cmp, name, dry } = lastReport;
   const rows = [["Category", "Type", "Vehicle", "Details"]];
   [...up.issues, ...cmp.errors].forEach(e => rows.push(["ERROR", e.type, e.vehicle, e.detail]));
+  wrong.forEach(w => rows.push(["WRONG WAREHOUSE", w.status, w.vehicle, `${w.sheetName}: ${w.msg}`]));
   up.duplicates.forEach(d => rows.push(["DUPLICATE", "Merged", d.vehicle, d.detail]));
   cmp.updates.forEach(u => rows.push([dry ? "WOULD UPDATE" : "UPDATED", "", u.vehicle, `${u.old} -> ${u.next} (diff ${u.diff}) cell ${u.cell} ${u.note}`]));
   cmp.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.detail]));
