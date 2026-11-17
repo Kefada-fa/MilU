@@ -114,7 +114,7 @@ const CONFIG = {
     "Akbieh": { sheetId: "1q1wFGkoyVpAW402NrhyzWm8XotxhFLoMPv6W36I2c5E", tab: "" }
   },
   READ_ONLY_SHEETS: {
-    "Trailer trucks": { sheetId: "1aQjx7lM9-rdsiIOkI2BCD3Los9K7iMIP3CN9K6E4ngQ", tab: "" }
+    "Read-only sheet": { sheetId: "PASTE_READONLY_SHEET_ID", tab: "" }
   },
   VEHICLE_HEADERS: ["vehicle number", "vehicle no", "vehicle no.", "vehicle", "vehicle #", "plate", "plate number", "plate no"],
   MILEAGE_HEADERS: ["mileage", "km", "kilometers", "odometer", "current mileage", "milage"],
@@ -379,17 +379,16 @@ function renderSearch(scans, raw, key) {
   if (!hits.length) html += `<div class="banner err">Vehicle <b>${esc(raw)}</b> was not found in any sheet.</div>`;
   else {
     html += `<div class="banner ok">Found <b>${esc(raw)}</b> in ${hits.length} place${hits.length > 1 ? "s" : ""}.</div>`;
-    hits.forEach(({ sc, r }) => {
-      const head = sc.d.rows[sc.hdr.headerRow] || [], row = sc.d.rows[r] || [];
-      const n = Math.max(head.length, row.length), pairs = [];
-      for (let c = 0; c < n; c++) {
-        const hv = String(head[c] ?? "").trim(), val = row[c];
-        if (hv === "" && String(val ?? "").trim() === "") continue;
-        pairs.push({ h: hv || "Column " + colLetter(c), v: val ?? "" });
-      }
-      html += `<div class="hit"><h3>${esc(sc.s.name)} ${sc.s.readOnly ? '<span class="tag t-info">read-only</span>' : ""} <span style="font-weight:400;color:var(--muted)">- sheet row ${r + 1}</span></h3>` +
-        table([{ h: "Column", f: p => esc(p.h) }, { h: "Value", f: p => (String(p.v).trim() === "" ? "<span style='color:var(--muted)'>-</span>" : esc(p.v)), cls: "msg" }], pairs) + `</div>`;
+    const rows = hits.map(({ sc, r }) => {
+      const mc = sc.hdr.mileageCol;
+      const m = mc >= 0 ? String((sc.d.rows[r] || [])[mc] ?? "").trim() : "";
+      return { loc: sc.s.name, ro: sc.s.readOnly, mileage: m, row: r + 1 };
     });
+    html += table([
+      { h: "Location", f: p => esc(p.loc) + (p.ro ? ' <span class="tag t-info">read-only</span>' : "") },
+      { h: "Mileage", f: p => (p.mileage === "" ? "<span style='color:var(--muted)'>not available</span>" : "<b>" + esc(p.mileage) + "</b>") },
+      { h: "Sheet row", f: p => esc(p.row) }
+    ], rows);
   }
   if (failed.length) html += `<div class="banner warn"><b>Could not check:</b> ${failed.map(f => `${esc(f.s.name)} (${esc(f.error)})`).join("; ")}. The result above may be incomplete.</div>`;
   $("sresults").innerHTML = html;
