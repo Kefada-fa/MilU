@@ -114,7 +114,7 @@
     <button id="ogo">Preview changes</button>
     <div id="ostatus" class="status"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
-    <div class="hint" style="margin-top:0">Print the list of vehicles of the selected warehouse whose column E is above 9000.</div>
+    <div class="hint" style="margin-top:0">Print the list of vehicles of the selected warehouse whose column E is above 9000 (the column E value is printed).</div>
     <button id="oprint" class="secondary" style="width:100%;padding:12px 18px;font-size:16px">Print engine oil filter list</button>
   </div>
   <div id="oresults"></div>
@@ -892,8 +892,7 @@ function oilDueList(sheetRows) {
     if (!veh) continue;
     const e = parseMileage(row[CONFIG.PRINT_COL]);
     if (isNaN(e) || !(e > CONFIG.PRINT_MIN)) continue;
-    const m = parseMileage(row[hdr.mileageCol]);
-    out.push({ vehicle: veh, item: CONFIG.PART_KEYWORD, mileage: isNaN(m) ? String(row[hdr.mileageCol] ?? "").trim() || "-" : fmt(m) });
+    out.push({ vehicle: veh, item: CONFIG.PART_KEYWORD, mileage: fmt(e) });   // the column E value that passed the filter
   }
   return out;
 }
