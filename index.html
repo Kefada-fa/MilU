@@ -53,6 +53,8 @@
   .hit { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-top:10px; }
   .hit h3 { margin:0 0 8px; }
   .status { font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
+  .hint { font-size:13px; color:var(--muted); margin:-6px 0 12px; }
+  details { margin-top:14px; } summary { cursor:pointer; font-weight:600; font-size:15px; }
   .actions { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; align-items:center; }
 </style>
 </head>
@@ -91,6 +93,27 @@
   </div>
 
   <div id="results"></div>
+
+  <!-- ===== Engine oil filter update ===== -->
+  <div class="card">
+    <h2 style="margin-top:0" id="otitle">Engine oil filter update</h2>
+    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its engine oil filter replacements is written to column D.</div>
+    <div class="row">
+      <label for="owh">Warehouse</label>
+      <select id="owh"></select>
+    </div>
+    <div class="row">
+      <label for="ofile">Parts file (Excel)</label>
+      <input id="ofile" type="file" accept=".xlsx,.xls,.csv">
+    </div>
+    <div class="row check">
+      <input id="odry" type="checkbox">
+      <label for="odry" style="margin:0;font-weight:500">Preview only (show what would change, don't write to the sheet)</label>
+    </div>
+    <button id="ogo">Update oil filter mileage</button>
+    <div id="ostatus" class="status"></div>
+  </div>
+  <div id="oresults"></div>
 </div>
 
 <script>
@@ -118,7 +141,14 @@ const CONFIG = {
   },
   VEHICLE_HEADERS: ["vehicle number", "vehicle no", "vehicle no.", "vehicle", "vehicle #", "plate", "plate number", "plate no"],
   MILEAGE_HEADERS: ["mileage", "km", "kilometers", "odometer", "current mileage", "milage"],
-  MAX_INCREASE: 2000
+  MAX_INCREASE: 2000,
+
+  /* ---- Part replacement update (parts file -> warehouse sheet) ---- */
+  PART_KEYWORD: "Engine oil filter",   // searched inside the Item/Service Description ("contains", ignores upper/lower case)
+  PART_TARGET_COL: 3,                  // warehouse column to update: 0=A, 1=B, 2=C, 3=D ...
+  PARTS_CAR_HEADERS: ["car"],
+  PARTS_MILEAGE_HEADERS: ["mileage"],
+  PARTS_DESC_HEADERS: ["description"]  // any header that contains this word
 };
 
 /* ============================ HELPERS ============================ */
@@ -338,6 +368,10 @@ function init() {
   const notConfigured = CONFIG.GOOGLE_CLIENT_ID.startsWith("PASTE") ||
     Object.values(CONFIG.WAREHOUSES).every(w => w.sheetId.startsWith("PASTE"));
   if (notConfigured) $("cfgBanner").innerHTML = `<div class="banner warn">Setup needed: fill in GOOGLE_CLIENT_ID and the Sheet IDs in the CONFIG section at the top of the script.</div>`;
+  const osel = $("owh");
+  Object.keys(CONFIG.WAREHOUSES).forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; osel.appendChild(o); });
+  $("otitle").textContent = CONFIG.PART_KEYWORD + " update";
+  $("ogo").addEventListener("click", oilRun);
   $("go").addEventListener("click", run);
   $("sbtn").addEventListener("click", runSearch);
   $("q").addEventListener("keydown", e => { if (e.key === "Enter") runSearch(); });
@@ -603,6 +637,167 @@ function downloadReport() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv" }));
   a.download = `mileage-report-${name.replace(/\W+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
+
+/* ============================ PART REPLACEMENT UPDATE (e.g. Engine oil filter) ============================ */
+const normText = v => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+
+/* Finds the Car / Mileage / Description columns of the parts file (falls back to B, C, J). */
+function findPartsCols(rows, maxScan = 15) {
+  for (let r = 0; r < Math.min(rows.length, maxScan); r++) {
+    let car = -1, mil = -1, desc = -1;
+    (rows[r] || []).forEach((cell, c) => {
+      const h = normHeader(cell);
+      if (car < 0 && CONFIG.PARTS_CAR_HEADERS.includes(h)) car = c;
+      if (mil < 0 && CONFIG.PARTS_MILEAGE_HEADERS.includes(h)) mil = c;
+      if (desc < 0 && CONFIG.PARTS_DESC_HEADERS.some(k => h.includes(k))) desc = c;
+    });
+    if (car >= 0 && mil >= 0 && desc >= 0) return { headerRow: r, car, mil, desc, fallback: false };
+  }
+  const start = isNaN(parseMileage((rows[0] || [])[2])) ? 1 : 0;
+  return { headerRow: start - 1, car: 1, mil: 2, desc: 9, fallback: true };
+}
+
+/* Pure logic. For each vehicle of the warehouse sheet: rows of the parts file whose Car contains the
+   vehicle number AND whose description contains the keyword -> highest mileage -> warehouse column D.
+   Only rule: the new value must not be lower than the current one. */
+function oilCompute(partsRows, sheetRows) {
+  const pc = findPartsCols(partsRows);
+  const kw = normText(CONFIG.PART_KEYWORD);
+  const carN = [], isPart = [], mil = [], rowNo = [];
+  for (let r = pc.headerRow + 1; r < partsRows.length; r++) {
+    const row = partsRows[r] || [];
+    const c = normVehicle(row[pc.car]);
+    if (!c) continue;
+    carN.push(c); isPart.push(normText(row[pc.desc]).includes(kw)); mil.push(parseMileage(row[pc.mil])); rowNo.push(r + 1);
+  }
+  const hdr = findHeaderRow(sheetRows);
+  if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
+  const index = buildIndex(sheetRows, hdr);
+  const col = CONFIG.PART_TARGET_COL, L = colLetter(col);
+  const updates = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
+
+  for (const [key, hits] of index) {
+    const display = String((sheetRows[hits[0]] || [])[hdr.vehicleCol] ?? "").trim();
+    if (hits.length > 1) { errors.push({ type: "Duplicate vehicle in warehouse", vehicle: display, detail: `Vehicle ${display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
+    const r = hits[0], sheetRow = r + 1, cell = `${L}${sheetRow}`;
+
+    let anyCar = false, best = null; const bad = [], cars = new Set();
+    for (let i = 0; i < carN.length; i++) {
+      if (!carN[i].includes(key)) continue;
+      anyCar = true;
+      if (!isPart[i]) continue;
+      cars.add(carN[i]);
+      if (isNaN(mil[i])) { bad.push(rowNo[i]); continue; }
+      if (!best || mil[i] > best.mileage) best = { mileage: mil[i], row: rowNo[i], car: carN[i] };
+    }
+    if (!best) {
+      if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${CONFIG.PART_KEYWORD}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
+      else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${CONFIG.PART_KEYWORD}" row.` });
+      else notInFile.push({ vehicle: display, detail: `Vehicle ${display} was not found in the parts file.` });
+      continue;
+    }
+    let note = "";
+    if (cars.size > 1) {
+      const list = [...cars]; const shown = list.slice(0, 5).join(", ") + (list.length > 5 ? `, ... (+${list.length - 5})` : "");
+      note = `Matched ${cars.size} different Car values (${shown}). Used Car ${best.car}, parts file row ${best.row}. Please check.`;
+      warnings.push({ vehicle: display, detail: `Vehicle ${display} matched ${cars.size} different Car values in the parts file: ${shown}. The highest mileage ${fmt(best.mileage)} came from Car ${best.car} (parts file row ${best.row}).` });
+    }
+    if (bad.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${bad.join(", ")} were ignored because their mileage is not a valid number.` });
+
+    const rawOld = (sheetRows[r] || [])[col];
+    if (String(rawOld ?? "").trim() === "") { updates.push({ vehicle: display, old: "(empty)", next: best.mileage, diff: "-", cell, sheetRow, note: note || "Old value was empty" }); continue; }
+    const old = parseMileage(rawOld);
+    if (isNaN(old)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} (parts file row ${best.row}) was not written.` }); continue; }
+    const diff = best.mileage - old;
+    if (diff < 0) { errors.push({ type: "Lower than current", vehicle: display, detail: `Vehicle ${display}: highest ${CONFIG.PART_KEYWORD} mileage in the parts file is ${fmt(best.mileage)} (row ${best.row}), which is LOWER than ${fmt(old)} in warehouse cell ${cell}. Difference: ${fmt(diff)}. Not updated.` }); continue; }
+    if (diff === 0) { unchanged.push({ vehicle: display, old, cell, detail: `Vehicle ${display}: already ${fmt(old)} in cell ${cell}. Nothing changed.` }); continue; }
+    updates.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note });
+  }
+  return { updates, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback };
+}
+
+let lastOil = null;
+function oilStatus(t) { $("ostatus").textContent = t; }
+
+async function oilRun() {
+  const file = $("ofile").files[0], name = $("owh").value, dry = $("odry").checked;
+  $("oresults").innerHTML = "";
+  if (!file) { oilStatus("Please choose the parts Excel file first."); return; }
+  const w = CONFIG.WAREHOUSES[name];
+  $("ogo").disabled = true;
+  try {
+    oilStatus("Reading the parts file (a big file can take a moment)...");
+    const partsRows = await readFile(file);
+    oilStatus("Signing in to Google and loading " + name + "...");
+    const wh = await loadSheet(w);
+    oilStatus("Matching vehicles...");
+    await new Promise(r => setTimeout(r, 30));
+    const res = oilCompute(partsRows, wh.rows);
+    if (!dry && res.updates.length) {
+      oilStatus(`Writing ${res.updates.length} updates to ${name}...`);
+      await writeUpdates(w, wh.q, res.updates);
+    }
+    oilStatus(dry ? "Preview finished. Nothing was written." : "Done.");
+    lastOil = { name, dry, res };
+    oilRender(lastOil);
+  } catch (e) {
+    console.error(e);
+    oilStatus("");
+    $("oresults").innerHTML = `<div class="card"><div class="banner err"><b>Stopped:</b> ${esc(e.message)}<br>Nothing was written to the sheet.</div></div>`;
+  } finally { $("ogo").disabled = false; }
+}
+
+function oilRender({ name, dry, res }) {
+  const allErrors = res.errors;
+  let h = `<div class="card"><h2 style="margin-top:0">${dry ? "Preview" : "Result"} - ${esc(CONFIG.PART_KEYWORD)} - ${esc(name)}</h2>`;
+  if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage) and J (Description) were used.</div>`;
+  h += `<div class="stats">
+    <div class="stat s-ok"><b>${res.updates.length}</b><span>${dry ? "Would be updated" : "Updated"}</span></div>
+    <div class="stat s-err"><b>${allErrors.length}</b><span>Errors</span></div>
+    <div class="stat s-info"><b>${res.unchanged.length}</b><span>Unchanged</span></div>
+    <div class="stat s-warn"><b>${res.noEntry.length + res.notInFile.length}</b><span>No ${esc(CONFIG.PART_KEYWORD)} entry</span></div></div>
+    <div class="actions"><button class="secondary" id="odl">Download report (CSV)</button></div>`;
+
+  if (allErrors.length) h += `<h2>Errors - check these</h2>` + table([
+    { h: "Type", f: r => `<span class="tag t-err">${esc(r.type)}</span>` },
+    { h: "Vehicle", f: r => esc(r.vehicle) },
+    { h: "Details", f: r => esc(r.detail), cls: "msg" }], allErrors);
+  else h += `<div class="banner ok">No errors.</div>`;
+
+  if (res.warnings.length) h += `<div class="ybox"><h2>Check these</h2>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.warnings) + `</div>`;
+
+  if (res.updates.length) h += `<h2>${dry ? "Would be updated" : "Updated"} in ${esc(name)} (column ${colLetter(CONFIG.PART_TARGET_COL)})</h2>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Before", f: r => esc(fmt(r.old)) }, { h: "After", f: r => esc(fmt(r.next)) },
+    { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" }], res.updates);
+
+  if (res.unchanged.length) h += `<details><summary>Unchanged (${res.unchanged.length})</summary>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.unchanged) + `</details>`;
+  if (res.noEntry.length) h += `<details><summary>In the parts file but no ${esc(CONFIG.PART_KEYWORD)} row (${res.noEntry.length})</summary>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.noEntry) + `</details>`;
+  if (res.notInFile.length) h += `<details><summary>Not found in the parts file (${res.notInFile.length})</summary>` + table([
+    { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.notInFile) + `</details>`;
+
+  h += `</div>`;
+  $("oresults").innerHTML = h;
+  $("odl").addEventListener("click", oilDownload);
+}
+
+function oilDownload() {
+  const { name, dry, res } = lastOil;
+  const rows = [["Category", "Type", "Vehicle", "Before", "After", "Difference", "Cell", "Details"]];
+  res.errors.forEach(e => rows.push(["ERROR", e.type, e.vehicle, "", "", "", "", e.detail]));
+  res.warnings.forEach(w => rows.push(["CHECK", "", w.vehicle, "", "", "", "", w.detail]));
+  res.updates.forEach(u => rows.push([dry ? "WOULD UPDATE" : "UPDATED", "", u.vehicle, u.old, u.next, u.diff, u.cell, u.note]));
+  res.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.old, "", "", u.cell, u.detail]));
+  res.noEntry.forEach(u => rows.push(["NO ENTRY", "", u.vehicle, "", "", "", "", u.detail]));
+  res.notInFile.forEach(u => rows.push(["NOT IN FILE", "", u.vehicle, "", "", "", "", u.detail]));
+  const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" }));
+  a.download = `oil-filter-${name.replace(/\W+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
 }
 
