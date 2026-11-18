@@ -102,7 +102,7 @@
   <!-- ===== Engine oil filter update ===== -->
   <div class="card">
     <h2 style="margin-top:0" id="otitle">Engine oil filter update</h2>
-    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its engine oil filter replacements is prepared for column D. You review the list, untick any vehicle you don't want, then press Update selected.</div>
+    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its engine oil filter replacements is prepared for column D. You review the list, untick any vehicle you don't want, then press Update selected. Vehicles whose new mileage is lower than the current one are listed separately and are not ticked.</div>
     <div class="row">
       <label for="owh">Warehouse</label>
       <select id="owh"></select>
@@ -689,7 +689,7 @@ function oilCompute(partsRows, sheetRows) {
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
   const index = buildIndex(sheetRows, hdr);
   const col = CONFIG.PART_TARGET_COL, L = colLetter(col);
-  const updates = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
+  const updates = [], lowers = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
 
   for (const [key, hits] of index) {
     const display = String((sheetRows[hits[0]] || [])[hdr.vehicleCol] ?? "").trim();
@@ -724,11 +724,11 @@ function oilCompute(partsRows, sheetRows) {
     const old = parseMileage(rawOld);
     if (isNaN(old)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} (parts file row ${best.row}) was not written.` }); continue; }
     const diff = best.mileage - old;
-    if (diff < 0) { errors.push({ type: "Lower than current", vehicle: display, detail: `Vehicle ${display}: highest ${CONFIG.PART_KEYWORD} mileage in the parts file is ${fmt(best.mileage)} (row ${best.row}), which is LOWER than ${fmt(old)} in warehouse cell ${cell}. Difference: ${fmt(diff)}. Not updated.` }); continue; }
+    if (diff < 0) { lowers.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note: `Parts file row ${best.row}.` + (note ? " " + note : "") }); continue; }
     if (diff === 0) { unchanged.push({ vehicle: display, old, cell, detail: `Vehicle ${display}: already ${fmt(old)} in cell ${cell}. Nothing changed.` }); continue; }
     updates.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note });
   }
-  return { updates, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback };
+  return { updates, lowers, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback };
 }
 
 let lastOil = null;   // { name, w, res, partsRows, applied }
@@ -767,13 +767,14 @@ function oilStateTag(u) {
 
 function oilRender() {
   const { name, res, applied } = lastOil;
-  const ups = res.updates;
-  const doneN = ups.filter(u => u.status === "done").length;
+  const ups = res.updates, lows = res.lowers;
+  const doneN = ups.concat(lows).filter(u => u.status === "done").length;
   let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(CONFIG.PART_KEYWORD)} - ${esc(name)}</h2>`;
   if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage) and J (Description) were used.</div>`;
   h += `<div class="stats">
     <div class="stat s-ok"><b>${applied ? doneN : ups.length}</b><span>${applied ? "Updated" : "Would be updated"}</span></div>
     <div class="stat s-err"><b>${res.errors.length}</b><span>Errors</span></div>
+    <div class="stat s-warn"><b>${lows.length}</b><span>Lower than current</span></div>
     <div class="stat s-info"><b>${res.unchanged.length}</b><span>Unchanged</span></div>
     <div class="stat s-warn"><b>${res.noEntry.length + res.notInFile.length}</b><span>No ${esc(CONFIG.PART_KEYWORD)} entry</span></div></div>
     <div class="actions"><button class="secondary" id="odl">Download report (CSV)</button></div>`;
@@ -787,15 +788,32 @@ function oilRender() {
   if (res.warnings.length) h += `<div class="ybox"><h2>Check these</h2>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.warnings) + `</div>`;
 
+  let barDone = false;
+  const bar = () => {
+    if (applied || barDone) return "";
+    barDone = true;
+    return `<div class="actions"><button id="oapply" style="width:auto">Update selected</button><span style="font-size:13px;color:var(--muted)">Only the ticked vehicles are written.</span></div>`;
+  };
+
   if (ups.length) {
-    h += `<h2>${applied ? "Updated" : "Would be updated"} in ${esc(name)} (column ${colLetter(CONFIG.PART_TARGET_COL)})</h2>`;
-    if (!applied) h += `<div class="actions"><button id="oapply" style="width:auto">Update selected</button><span style="font-size:13px;color:var(--muted)">Only the ticked vehicles are written.</span></div>`;
+    h += `<h2>${applied ? "Updated" : "Would be updated"} in ${esc(name)} (column ${colLetter(CONFIG.PART_TARGET_COL)})</h2>` + bar();
     const cols = [];
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="oall" checked title="Select / unselect all">`, f: r => `<input type="checkbox" class="ochk" data-i="${r.i}" checked>` });
     cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Before", f: r => esc(fmt(r.old)) }, { h: "After", f: r => esc(fmt(r.next)) },
       { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
     h += table(cols, ups.map((u, i) => Object.assign({}, u, { i })));
+  }
+
+  if (lows.length) {
+    h += `<div class="ybox"><h2>Lower than current${applied ? "" : " - tick the ones you want to update anyway"}</h2>`;
+    if (!applied) h += `<p style="margin:0 0 10px;font-size:14px">The mileage in the parts file is lower than the value in column ${colLetter(CONFIG.PART_TARGET_COL)}. These are not ticked, so nothing changes unless you tick them.</p>` + bar();
+    const cols = [];
+    cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
+      : { h: "", hraw: `<input type="checkbox" id="olall" title="Select / unselect all">`, f: r => `<input type="checkbox" class="olow" data-i="${r.i}">` });
+    cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Current", f: r => esc(fmt(r.old)) }, { h: "New (parts file)", f: r => esc(fmt(r.next)) },
+      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
+    h += table(cols, lows.map((u, i) => Object.assign({}, u, { i }))) + `</div>`;
   }
 
   if (res.unchanged.length) h += `<details><summary>Unchanged (${res.unchanged.length})</summary>` + table([
@@ -810,19 +828,27 @@ function oilRender() {
   oilCount();
 }
 
-function oilBoxes() { return [...document.querySelectorAll("#oresults input.ochk")]; }
+function oilBoxes() { return [...document.querySelectorAll("#oresults input.ochk, #oresults input.olow")]; }
 
 function oilCount() {
   const btn = $("oapply"); if (!btn) return;
-  const boxes = oilBoxes(), n = boxes.filter(b => b.checked).length;
+  const n = oilBoxes().filter(b => b.checked).length;
   btn.textContent = `Update selected (${n})`;
   btn.disabled = n === 0;
-  const all = $("oall"); if (all) { all.checked = n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+  [["ochk", "oall"], ["olow", "olall"]].forEach(([cls, hid]) => {
+    const list = [...document.querySelectorAll("#oresults input." + cls)], head = $(hid);
+    if (!head) return;
+    const on = list.filter(b => b.checked).length;
+    head.checked = list.length > 0 && on === list.length;
+    head.indeterminate = on > 0 && on < list.length;
+  });
 }
 
 function oilOnChange(e) {
-  if (e.target.id === "oall") oilBoxes().forEach(b => b.checked = e.target.checked);
-  if (e.target.id === "oall" || e.target.classList.contains("ochk")) oilCount();
+  const id = e.target.id;
+  if (id === "oall") document.querySelectorAll("#oresults input.ochk").forEach(b => b.checked = e.target.checked);
+  if (id === "olall") document.querySelectorAll("#oresults input.olow").forEach(b => b.checked = e.target.checked);
+  if (id === "oall" || id === "olall" || e.target.classList.contains("ochk") || e.target.classList.contains("olow")) oilCount();
 }
 
 function oilOnClick(e) {
@@ -834,43 +860,54 @@ function oilOnClick(e) {
    old and new values are still exactly what the preview showed. */
 async function oilApply() {
   if (!lastOil || lastOil.applied) return;
-  const ups = lastOil.res.updates;
-  const sel = new Set(oilBoxes().filter(b => b.checked).map(b => ups[Number(b.dataset.i)].vehicle));
-  if (!sel.size) return;
+  const ups = lastOil.res.updates, lows = lastOil.res.lowers;
+  const selU = new Set(), selL = new Set();
+  oilBoxes().filter(b => b.checked).forEach(b => {
+    if (b.classList.contains("olow")) selL.add(lows[Number(b.dataset.i)].vehicle);
+    else selU.add(ups[Number(b.dataset.i)].vehicle);
+  });
+  if (!selU.size && !selL.size) return;
+  if (selL.size && !window.confirm(`You ticked ${selL.size} vehicle(s) whose new mileage is LOWER than the current value. They will be overwritten with the lower value. Continue?`)) return;
   $("oapply").disabled = true; $("ogo").disabled = true;
   try {
     oilStatus("Re-checking " + lastOil.name + " before writing...");
     const wh = await loadSheet(lastOil.w);
     const fresh = oilCompute(lastOil.partsRows, wh.rows);
-    const fmap = new Map(fresh.updates.map(u => [u.vehicle, u]));
     const todo = [];
-    ups.forEach(u => {
-      if (!sel.has(u.vehicle)) { u.status = "skipped"; return; }
-      const f = fmap.get(u.vehicle);
-      if (f && f.old === u.old && f.next === u.next && f.cell === u.cell) { u.status = "done"; todo.push(f); }
-      else u.status = "changed";
-    });
+    const resolve = (list, sel, freshList) => {
+      const fm = new Map(freshList.map(u => [u.vehicle, u]));
+      list.forEach(u => {
+        if (!sel.has(u.vehicle)) { u.status = "skipped"; return; }
+        const f = fm.get(u.vehicle);
+        if (f && f.old === u.old && f.next === u.next && f.cell === u.cell) { u.status = "done"; todo.push(f); }
+        else u.status = "changed";
+      });
+    };
+    resolve(ups, selU, fresh.updates);
+    resolve(lows, selL, fresh.lowers);
     if (todo.length) { oilStatus(`Writing ${todo.length} updates to ${lastOil.name}...`); await writeUpdates(lastOil.w, wh.q, todo); }
     lastOil.applied = true;
-    const changed = ups.filter(u => u.status === "changed").length;
+    const changed = ups.concat(lows).filter(u => u.status === "changed").length;
     oilStatus(`Done. ${todo.length} updated.` + (changed ? ` ${changed} not updated because the sheet changed since the preview - run the preview again.` : ""));
     oilRender();
   } catch (e) {
     console.error(e);
-    ups.forEach(u => delete u.status);
+    ups.concat(lows).forEach(u => delete u.status);
     oilStatus("");
     $("oresults").insertAdjacentHTML("afterbegin", `<div class="banner err"><b>Stopped:</b> ${esc(e.message)}<br>Some updates may already have been written. Run the preview again to check.</div>`);
-    $("oapply") && ($("oapply").disabled = false);
+    if ($("oapply")) $("oapply").disabled = false;
   } finally { $("ogo").disabled = false; }
 }
 
 function oilDownload() {
   const { name, res } = lastOil;
   const lab = { done: "UPDATED", skipped: "NOT UPDATED (unticked)", changed: "NOT UPDATED (sheet changed)" };
+  const labL = { done: "UPDATED (lower value, ticked)", skipped: "NOT UPDATED (lower than current)", changed: "NOT UPDATED (sheet changed)" };
   const rows = [["Category", "Type", "Vehicle", "Before", "After", "Difference", "Cell", "Details"]];
   res.errors.forEach(e => rows.push(["ERROR", e.type, e.vehicle, "", "", "", "", e.detail]));
   res.warnings.forEach(w => rows.push(["CHECK", "", w.vehicle, "", "", "", "", w.detail]));
   res.updates.forEach(u => rows.push([lab[u.status] || "WOULD UPDATE", "", u.vehicle, u.old, u.next, u.diff, u.cell, u.note]));
+  res.lowers.forEach(u => rows.push([labL[u.status] || "LOWER THAN CURRENT", "", u.vehicle, u.old, u.next, u.diff, u.cell, u.note]));
   res.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.old, "", "", u.cell, u.detail]));
   res.noEntry.forEach(u => rows.push(["NO ENTRY", "", u.vehicle, "", "", "", "", u.detail]));
   res.notInFile.forEach(u => rows.push(["NOT IN FILE", "", u.vehicle, "", "", "", "", u.detail]));
