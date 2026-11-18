@@ -114,7 +114,7 @@
     <button id="ogo">Preview changes</button>
     <div id="ostatus" class="status"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
-    <div class="hint" style="margin-top:0">Print the list of vehicles of the selected warehouse whose column E is above 9000 (the column E value is printed).</div>
+    <div class="hint" style="margin-top:0">Print the list of vehicles of the selected warehouse whose column E is above 9000 (the vehicle's current mileage and its column E value are printed).</div>
     <button id="oprint" class="secondary" style="width:100%;padding:12px 18px;font-size:16px">Print engine oil filter list</button>
   </div>
   <div id="oresults"></div>
@@ -158,7 +158,8 @@ const CONFIG = {
 
   /* ---- Print list: vehicles whose warehouse column E is above this number ---- */
   PRINT_COL: 4,                        // 0=A ... 4=E
-  PRINT_MIN: 9000
+  PRINT_MIN: 9000,
+  PRINT_LABEL: "KM"      // title of the column E value in the printed table
 };
 
 /* ============================ HELPERS ============================ */
@@ -929,7 +930,8 @@ function oilDueList(sheetRows) {
     if (!veh) continue;
     const e = parseMileage(row[CONFIG.PRINT_COL]);
     if (isNaN(e) || !(e > CONFIG.PRINT_MIN)) continue;
-    out.push({ vehicle: veh, item: CONFIG.PART_KEYWORD, mileage: fmt(e) });   // the column E value that passed the filter
+    const m = parseMileage(row[hdr.mileageCol]);
+    out.push({ vehicle: veh, item: CONFIG.PART_KEYWORD, mileage: isNaN(m) ? (String(row[hdr.mileageCol] ?? "").trim() || "-") : fmt(m), eValue: fmt(e) });
   }
   return out;
 }
@@ -944,7 +946,7 @@ async function oilPrint() {
     if (!list.length) { oilStatus(`No vehicle in ${name} has a value above ${fmt(CONFIG.PRINT_MIN)} in column ${colLetter(CONFIG.PRINT_COL)}. Nothing to print.`); return; }
     $("printArea").innerHTML = `<h2>${esc(CONFIG.PART_KEYWORD)} - ${esc(name)}</h2>
       <div class="meta">${esc(new Date().toLocaleDateString("en-GB"))} - ${list.length} vehicle${list.length > 1 ? "s" : ""}</div>` +
-      table([{ h: "Vehicle number", f: r => esc(r.vehicle) }, { h: "Item to change", f: r => esc(r.item) }, { h: "Current mileage", f: r => esc(r.mileage) }], list);
+      table([{ h: "Vehicle number", f: r => esc(r.vehicle) }, { h: "Item to change", f: r => esc(r.item) }, { h: "Current mileage", f: r => esc(r.mileage) }, { h: CONFIG.PRINT_LABEL, f: r => esc(r.eValue) }], list);
     oilStatus(`${list.length} vehicle(s) found. Opening the print window...`);
     setTimeout(() => window.print(), 150);
   } catch (e) {
