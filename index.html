@@ -167,6 +167,9 @@ const CONFIG = {
                 An entry that is a list, e.g. ["فلفلين", "90"], needs ALL its words in the same description.
                 A number inside a list (like "90") only matches as a whole number (so "190" does not count).
      minQty   : optional. Only parts-file rows whose Quantity is GREATER than this number count.
+     replaceText: optional. If the warehouse cell holds something that is not a number (a dash, text...), the value found in
+                the parts file replaces it (it is listed under "Check these" so you are told).
+     kmCol / printMin: optional. Items without them have no KM column and are not part of the print.
      col      : warehouse column that receives the mileage of the last replacement (0=A, 1=B, 2=C, 3=D ...)
      kmCol    : warehouse column holding the KM since the last replacement (used by the print)
      printMin : the print lists the vehicle when its kmCol value is ABOVE this number
@@ -177,9 +180,9 @@ const CONFIG = {
     { id: "air",  label: "Air filter",          keywords: ["air filter", "فلتر هواء"],    col: 7, kmCol: 8, printMin: 79000, ready: true },
     { id: "val90",  label: "Val 90",            keywords: [["فلفلين", "90"], ["فلفولين", "90"]],   minQty: 3, col: 9,  kmCol: 10, printMin: 29000, ready: true },
     { id: "val140", label: "Val 140",           keywords: [["فلفلين", "140"], ["فلفولين", "140"]], minQty: 3, col: 11, kmCol: 12, printMin: 29000, ready: true },
-    { id: "fbrake", label: "Front brake pads",  ready: false },
-    { id: "rbrake", label: "Rear brake pads",   ready: false },
-    { id: "clutch", label: "Transmission clutch", ready: false },
+    { id: "fbrake", label: "Front brake pads",  keywords: ["كوليه فرام امامي", ["كوليه", "امامي"], ["كوليه", "front"]], col: 13, replaceText: true, ready: true },
+    { id: "rbrake", label: "Rear brake pads",   keywords: ["كوليه فرام خلفي", ["كوليه", "خلفي"], ["كوليه", "rear"]],    col: 15, replaceText: true, ready: true },
+    { id: "clutch", label: "Transmission clutch", keywords: ["ديسك دبرياج", ["ديسك", "دبرياج"]],                    col: 17, replaceText: true, ready: true },
     { id: "at",     label: "AT oil",            keywords: ["زيت اوتوماتيك", ["زيت", "اوتوماتيك"]], minQty: 1, col: 19, kmCol: 20, printMin: 59000, ready: true }
   ],
   PARTS_CAR_HEADERS: ["car"],
@@ -411,7 +414,7 @@ function init() {
   const isel = $("oitem");
   CONFIG.ITEMS.forEach(it => { const o = document.createElement("option"); o.value = it.id; o.textContent = it.label + (it.ready ? "" : " (coming soon)"); o.disabled = !it.ready; isel.appendChild(o); });
   $("oprinthint").textContent = "Print all the maintenance needed in the selected warehouse: " +
-    CONFIG.ITEMS.filter(it => it.ready).map(it => `${it.label.toLowerCase()} (column ${colLetter(it.kmCol)} above ${fmt(it.printMin)})`).join(", ") + ".";
+    CONFIG.ITEMS.filter(it => it.ready && it.kmCol !== undefined).map(it => `${it.label.toLowerCase()} (column ${colLetter(it.kmCol)} above ${fmt(it.printMin)})`).join(", ") + ".";
   const showRule = () => {
     const it = CONFIG.ITEMS.find(x => x.id === isel.value); if (!it || !it.keywords) { $("oitemhint").textContent = ""; return; }
     const kw = it.keywords.map(k => Array.isArray(k) ? "(" + k.join(" + ") + ")" : k).join("  or  ");
@@ -771,6 +774,7 @@ function oilCompute(partsRows, sheetRows, item) {
   for (const [, hits] of index) {
     if (hits.length > 1) continue;
     const row = sheetRows[hits[0]] || [];
+    if (item.kmCol === undefined) continue;
     const m = parseMileage(row[hdr.mileageCol]), d = parseMileage(row[col]), e = parseMileage(row[item.kmCol]);
     if (isNaN(m) || isNaN(d) || isNaN(e)) continue;
     kmN++; if (Math.abs((m - d) - e) <= 1) kmOk++;
@@ -813,7 +817,9 @@ function oilCompute(partsRows, sheetRows, item) {
     const maxM = Math.max(...cands.map(c => c.mileage));
     if (maxM > best.mileage) {
       /* The highest mileage is NOT the most recent entry: show every entry and let the person decide. */
-      if (!emptyOld && isNaN(oldNum)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld0}" which is not a number. Nothing was written.` }); continue; }
+      if (!emptyOld && isNaN(oldNum) && !item.replaceText) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld0}" which is not a number. Nothing was written.` }); continue; }
+      const oldIsText = !emptyOld && isNaN(oldNum);
+      if (oldIsText) warnings.push({ vehicle: display, detail: `Vehicle ${display}: cell ${cell} contains "${String(rawOld0).trim()}", which is not a number. Once you pick an entry, it will replace it.` });
       const pm = new Map();
       cands.forEach(c => {
         const k = c.mileage + "|" + c.date + "|" + c.car;
@@ -822,13 +828,13 @@ function oilCompute(partsRows, sheetRows, item) {
       });
       const options = [...pm.values()].sort((a, b) => ((isNaN(b.dateTs) ? -Infinity : b.dateTs) - (isNaN(a.dateTs) ? -Infinity : a.dateTs)) || (b.mileage - a.mileage));
       options.forEach(o => {
-        o.diff = emptyOld ? "-" : o.mileage - oldNum;
-        o.lower = !emptyOld && o.mileage < oldNum;
+        o.diff = emptyOld || oldIsText ? "-" : o.mileage - oldNum;
+        o.lower = !emptyOld && !oldIsText && o.mileage < oldNum;
         o.newKm = isNaN(curM) ? "-" : curM - o.mileage;
         o.recent = o.dateTs === best.date;
         o.highest = o.mileage === maxM;
       });
-      choices.push({ vehicle: display, old: emptyOld ? "(empty)" : oldNum, cell, sheetRow, options });
+      choices.push({ vehicle: display, old: emptyOld ? "(empty)" : oldIsText ? String(rawOld0).trim() : oldNum, cell, sheetRow, options });
       continue;
     }
     if (undated.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${undated.map(c => c.row).join(", ")} have no valid Del Date and were ignored. They could be more recent - please check.` });
@@ -846,7 +852,13 @@ function oilCompute(partsRows, sheetRows, item) {
     const rawOld = (sheetRows[r] || [])[col];
     if (String(rawOld ?? "").trim() === "") { updates.push({ vehicle: display, old: "(empty)", next: best.mileage, diff: "-", newKm, date, cell, sheetRow, note: notes.join(" ") || "Old value was empty" }); continue; }
     const old = parseMileage(rawOld);
-    if (isNaN(old)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} was not written.` }); continue; }
+    if (isNaN(old) && !item.replaceText) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} was not written.` }); continue; }
+    if (isNaN(old)) {
+      const txt = String(rawOld).trim();
+      warnings.push({ vehicle: display, detail: `Vehicle ${display}: cell ${cell} contains "${txt}", which is not a number, and a value was found in the parts file (${fmt(best.mileage)} on ${fmtDate(best.date)}). It is ready to replace it - untick the vehicle if you don't want that.` });
+      updates.push({ vehicle: display, old: txt, next: best.mileage, diff: "-", newKm, date, cell, sheetRow, note: [`The cell contained "${txt}" (not a number).`].concat(notes).join(" ") });
+      continue;
+    }
     const diff = best.mileage - old;
     if (diff < 0) { lowers.push({ vehicle: display, old, next: best.mileage, diff, newKm, date, cell, sheetRow, note: notes.join(" ") }); continue; }
     if (diff === 0) { unchanged.push({ vehicle: display, old, cell, detail: `Vehicle ${display}: already ${fmt(old)} in cell ${cell}. Nothing changed.` }); continue; }
@@ -895,6 +907,8 @@ function oilStateTag(u) {
 function oilRender() {
   const { name, res, applied, item } = lastOil;
   const ups = res.updates, lows = res.lowers;
+  const kmCols = [{ h: "New KM", f: r => esc(fmt(r.newKm)) }];
+  const kmColsC = [{ h: "New KM", f: r => r.none ? "" : esc(fmt(r.newKm)) }];
   const doneN = ups.concat(lows, res.choices).filter(u => u.status === "done").length;
   let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(item.label)} - ${esc(name)}</h2>`;
   if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage), J (Description) and K (Quantity) were used.</div>`;
@@ -931,7 +945,7 @@ function oilRender() {
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="oall" checked title="Select / unselect all">`, f: r => `<input type="checkbox" class="ochk" data-i="${r.i}" checked>` });
     cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Before", f: r => esc(fmt(r.old)) }, { h: "After", f: r => esc(fmt(r.next)) },
-      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "New KM", f: r => esc(fmt(r.newKm)) }, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
+      { h: "Difference", f: r => esc(fmt(r.diff)) }, ...kmCols, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
     h += table(cols, ups.map((u, i) => Object.assign({}, u, { i })));
   }
 
@@ -942,7 +956,7 @@ function oilRender() {
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="olall" title="Select / unselect all">`, f: r => `<input type="checkbox" class="olow" data-i="${r.i}">` });
     cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Current", f: r => esc(fmt(r.old)) }, { h: "New (parts file)", f: r => esc(fmt(r.next)) },
-      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "New KM", f: r => esc(fmt(r.newKm)) }, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
+      { h: "Difference", f: r => esc(fmt(r.diff)) }, ...kmCols, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
     h += table(cols, lows.map((u, i) => Object.assign({}, u, { i }))) + `</div>`;
   }
 
@@ -960,7 +974,7 @@ function oilRender() {
         { h: "Date", f: r => r.none ? "" : esc(r.date) },
         { h: "Car (as in parts file)", f: r => r.none ? "" : esc(r.car) },
         { h: "Difference", f: r => r.none ? "" : esc(fmt(r.diff)) },
-        { h: "New KM", f: r => r.none ? "" : esc(fmt(r.newKm)) }], rows);
+        ...kmColsC], rows);
     });
     h += `</div>`;
   }
@@ -1090,7 +1104,7 @@ function oilDownload() {
 function oilDueList(sheetRows) {
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
-  const items = CONFIG.ITEMS.filter(it => it.ready);
+  const items = CONFIG.ITEMS.filter(it => it.ready && it.kmCol !== undefined);
   const out = [];
   for (let r = hdr.headerRow + 1; r < sheetRows.length; r++) {
     const row = sheetRows[r] || [];
