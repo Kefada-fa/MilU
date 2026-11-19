@@ -99,10 +99,10 @@
 
   <div id="results"></div>
 
-  <!-- ===== Engine oil filter update ===== -->
+  <!-- ===== Regular maintenance update ===== -->
   <div class="card">
-    <h2 style="margin-top:0" id="otitle">Engine oil filter update</h2>
-    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its engine oil filter replacements is prepared for column D. You review the list, untick any vehicle you don't want, then press Update selected. Vehicles whose new mileage is lower than the current one are listed separately and are not ticked.</div>
+    <h2 style="margin-top:0">Regular maintenance update</h2>
+    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its replacements of the selected item is prepared for that item's column in the warehouse sheet. You review the list, untick any vehicle you don't want, then press Update selected. Vehicles whose new mileage is lower than the current one are listed separately and are not ticked.</div>
     <div class="row">
       <label for="owh">Warehouse</label>
       <select id="owh"></select>
@@ -111,11 +111,15 @@
       <label for="ofile">Parts file (Excel)</label>
       <input id="ofile" type="file" accept=".xlsx,.xls,.csv">
     </div>
+    <div class="row">
+      <label for="oitem">Item</label>
+      <select id="oitem"></select>
+    </div>
     <button id="ogo">Preview changes</button>
     <div id="ostatus" class="status"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
-    <div class="hint" style="margin-top:0">Print the list of vehicles of the selected warehouse whose column E is above 9000 (the vehicle's current mileage and its column E value are printed).</div>
-    <button id="oprint" class="secondary" style="width:100%;padding:12px 18px;font-size:16px">Print engine oil filter list</button>
+    <div class="hint" style="margin-top:0" id="oprinthint">Print all the maintenance needed in the selected warehouse.</div>
+    <button id="oprint" class="secondary" style="width:100%;padding:12px 18px;font-size:16px">Print regular maintenance</button>
   </div>
   <div id="oresults"></div>
 </div>
@@ -149,17 +153,29 @@ const CONFIG = {
   MILEAGE_HEADERS: ["mileage", "km", "kilometers", "odometer", "current mileage", "milage"],
   MAX_INCREASE: 2000,
 
-  /* ---- Part replacement update (parts file -> warehouse sheet) ---- */
-  PART_KEYWORD: "Engine oil filter",   // searched inside the Item/Service Description ("contains", ignores upper/lower case)
-  PART_TARGET_COL: 3,                  // warehouse column to update: 0=A, 1=B, 2=C, 3=D ...
+  /* ---- Regular maintenance (parts file -> warehouse sheet) ----
+     label    : name shown in the drop list and on the print
+     keywords : words searched inside the Item/Service Description of the parts file
+                ("contains", ignores upper/lower case; any one of them is enough)
+     col      : warehouse column that receives the mileage of the last replacement (0=A, 1=B, 2=C, 3=D ...)
+     kmCol    : warehouse column holding the KM since the last replacement (used by the print)
+     printMin : the print lists the vehicle when its kmCol value is ABOVE this number
+     ready    : false = shown in the list as "coming soon" and cannot be selected yet */
+  ITEMS: [
+    { id: "oil",  label: "Engine oil filter",   keywords: ["engine oil filter"],          col: 3, kmCol: 4, printMin: 9000,  ready: true },
+    { id: "fuel", label: "Fuel filter",         keywords: ["fuel filter", "فلتر مازوت"],  col: 5, kmCol: 6, printMin: 39000, ready: true },
+    { id: "air",  label: "Air filter",          keywords: ["air filter", "فلتر هواء"],    col: 7, kmCol: 8, printMin: 79000, ready: true },
+    { id: "val90",  label: "Val 90",            ready: false },
+    { id: "val140", label: "Val 140",           ready: false },
+    { id: "fbrake", label: "Front brake pads",  ready: false },
+    { id: "rbrake", label: "Rear brake pads",   ready: false },
+    { id: "clutch", label: "Transmission clutch", ready: false },
+    { id: "at",     label: "AT oil",            ready: false }
+  ],
   PARTS_CAR_HEADERS: ["car"],
   PARTS_MILEAGE_HEADERS: ["mileage"],
   PARTS_DESC_HEADERS: ["description"], // any header that contains this word
-
-  /* ---- Print list: vehicles whose warehouse column E is above this number ---- */
-  PRINT_COL: 4,                        // 0=A ... 4=E
-  PRINT_MIN: 9000,
-  PRINT_LABEL: "KM"      // title of the column E value in the printed table
+  PRINT_LABEL: "KM"                    // title of the KM column in the printed table
 };
 
 /* ============================ HELPERS ============================ */
@@ -381,7 +397,10 @@ function init() {
   if (notConfigured) $("cfgBanner").innerHTML = `<div class="banner warn">Setup needed: fill in GOOGLE_CLIENT_ID and the Sheet IDs in the CONFIG section at the top of the script.</div>`;
   const osel = $("owh");
   Object.keys(CONFIG.WAREHOUSES).forEach(n => { const o = document.createElement("option"); o.value = n; o.textContent = n; osel.appendChild(o); });
-  $("otitle").textContent = CONFIG.PART_KEYWORD + " update";
+  const isel = $("oitem");
+  CONFIG.ITEMS.forEach(it => { const o = document.createElement("option"); o.value = it.id; o.textContent = it.label + (it.ready ? "" : " (coming soon)"); o.disabled = !it.ready; isel.appendChild(o); });
+  $("oprinthint").textContent = "Print all the maintenance needed in the selected warehouse: " +
+    CONFIG.ITEMS.filter(it => it.ready).map(it => `${it.label.toLowerCase()} (column ${colLetter(it.kmCol)} above ${fmt(it.printMin)})`).join(", ") + ".";
   $("ogo").addEventListener("click", oilRun);
   $("oprint").addEventListener("click", oilPrint);
   $("oresults").addEventListener("change", oilOnChange);
@@ -655,7 +674,7 @@ function downloadReport() {
 }
 
 /* ============================ PART REPLACEMENT UPDATE (e.g. Engine oil filter) ============================ */
-const normText = v => String(v ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+const normText = v => String(v ?? "").toLowerCase().replace(/[\u064B-\u065F\u0640]/g, "").replace(/\s+/g, " ").trim();
 
 /* Finds the Car / Mileage / Description columns of the parts file (falls back to B, C, J). */
 function findPartsCols(rows, maxScan = 15) {
@@ -676,20 +695,20 @@ function findPartsCols(rows, maxScan = 15) {
 /* Pure logic. For each vehicle of the warehouse sheet: rows of the parts file whose Car contains the
    vehicle number AND whose description contains the keyword -> highest mileage -> warehouse column D.
    Only rule: the new value must not be lower than the current one. */
-function oilCompute(partsRows, sheetRows) {
+function oilCompute(partsRows, sheetRows, item) {
   const pc = findPartsCols(partsRows);
-  const kw = normText(CONFIG.PART_KEYWORD);
+  const kws = item.keywords.map(normText);
   const carN = [], isPart = [], mil = [], rowNo = [];
   for (let r = pc.headerRow + 1; r < partsRows.length; r++) {
     const row = partsRows[r] || [];
     const c = normVehicle(row[pc.car]);
     if (!c) continue;
-    carN.push(c); isPart.push(normText(row[pc.desc]).includes(kw)); mil.push(parseMileage(row[pc.mil])); rowNo.push(r + 1);
+    carN.push(c); { const d = normText(row[pc.desc]); isPart.push(kws.some(k => d.includes(k))); } mil.push(parseMileage(row[pc.mil])); rowNo.push(r + 1);
   }
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
   const index = buildIndex(sheetRows, hdr);
-  const col = CONFIG.PART_TARGET_COL, L = colLetter(col);
+  const col = item.col, L = colLetter(col);
   const updates = [], lowers = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
 
   for (const [key, hits] of index) {
@@ -707,8 +726,8 @@ function oilCompute(partsRows, sheetRows) {
       if (!best || mil[i] > best.mileage) best = { mileage: mil[i], row: rowNo[i], car: carN[i] };
     }
     if (!best) {
-      if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${CONFIG.PART_KEYWORD}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
-      else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${CONFIG.PART_KEYWORD}" row.` });
+      if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
+      else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${item.label}" row.` });
       else notInFile.push({ vehicle: display, detail: `Vehicle ${display} was not found in the parts file.` });
       continue;
     }
@@ -732,12 +751,14 @@ function oilCompute(partsRows, sheetRows) {
   return { updates, lowers, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback };
 }
 
-let lastOil = null;   // { name, w, res, partsRows, applied }
+let lastOil = null;   // { name, w, item, res, partsRows, applied }
 function oilStatus(t) { $("ostatus").textContent = t; }
 
 async function oilRun() {
   const file = $("ofile").files[0], name = $("owh").value;
+  const item = CONFIG.ITEMS.find(it => it.id === $("oitem").value);
   $("oresults").innerHTML = "";
+  if (!item || !item.ready) { oilStatus("Please choose an item from the list."); return; }
   if (!file) { oilStatus("Please choose the parts Excel file first."); return; }
   const w = CONFIG.WAREHOUSES[name];
   $("ogo").disabled = true;
@@ -748,8 +769,8 @@ async function oilRun() {
     const wh = await loadSheet(w);
     oilStatus("Matching vehicles...");
     await new Promise(r => setTimeout(r, 30));
-    const res = oilCompute(partsRows, wh.rows);
-    lastOil = { name, w, res, partsRows, applied: false };
+    const res = oilCompute(partsRows, wh.rows, item);
+    lastOil = { name, w, item, res, partsRows, applied: false };
     oilStatus(res.updates.length ? "Preview ready. Nothing has been written yet. Untick any vehicle you don't want to update, then press Update selected." : "Preview ready. There is nothing to update.");
     oilRender();
   } catch (e) {
@@ -767,17 +788,17 @@ function oilStateTag(u) {
 }
 
 function oilRender() {
-  const { name, res, applied } = lastOil;
+  const { name, res, applied, item } = lastOil;
   const ups = res.updates, lows = res.lowers;
   const doneN = ups.concat(lows).filter(u => u.status === "done").length;
-  let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(CONFIG.PART_KEYWORD)} - ${esc(name)}</h2>`;
+  let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(item.label)} - ${esc(name)}</h2>`;
   if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage) and J (Description) were used.</div>`;
   h += `<div class="stats">
     <div class="stat s-ok"><b>${applied ? doneN : ups.length}</b><span>${applied ? "Updated" : "Would be updated"}</span></div>
     <div class="stat s-err"><b>${res.errors.length}</b><span>Errors</span></div>
     <div class="stat s-warn"><b>${lows.length}</b><span>Lower than current</span></div>
     <div class="stat s-info"><b>${res.unchanged.length}</b><span>Unchanged</span></div>
-    <div class="stat s-warn"><b>${res.noEntry.length + res.notInFile.length}</b><span>No ${esc(CONFIG.PART_KEYWORD)} entry</span></div></div>
+    <div class="stat s-warn"><b>${res.noEntry.length + res.notInFile.length}</b><span>No ${esc(item.label)} entry</span></div></div>
     <div class="actions"><button class="secondary" id="odl">Download report (CSV)</button></div>`;
 
   if (res.errors.length) h += `<h2>Errors - check these</h2>` + table([
@@ -797,7 +818,7 @@ function oilRender() {
   };
 
   if (ups.length) {
-    h += `<h2>${applied ? "Updated" : "Would be updated"} in ${esc(name)} (column ${colLetter(CONFIG.PART_TARGET_COL)})</h2>` + bar();
+    h += `<h2>${applied ? "Updated" : "Would be updated"} in ${esc(name)} (column ${colLetter(item.col)})</h2>` + bar();
     const cols = [];
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="oall" checked title="Select / unselect all">`, f: r => `<input type="checkbox" class="ochk" data-i="${r.i}" checked>` });
@@ -808,7 +829,7 @@ function oilRender() {
 
   if (lows.length) {
     h += `<div class="ybox"><h2>Lower than current${applied ? "" : " - tick the ones you want to update anyway"}</h2>`;
-    if (!applied) h += `<p style="margin:0 0 10px;font-size:14px">The mileage in the parts file is lower than the value in column ${colLetter(CONFIG.PART_TARGET_COL)}. These are not ticked, so nothing changes unless you tick them.</p>` + bar();
+    if (!applied) h += `<p style="margin:0 0 10px;font-size:14px">The mileage in the parts file is lower than the value in column ${colLetter(item.col)}. These are not ticked, so nothing changes unless you tick them.</p>` + bar();
     const cols = [];
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="olall" title="Select / unselect all">`, f: r => `<input type="checkbox" class="olow" data-i="${r.i}">` });
@@ -819,7 +840,7 @@ function oilRender() {
 
   if (res.unchanged.length) h += `<details><summary>Unchanged (${res.unchanged.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.unchanged) + `</details>`;
-  if (res.noEntry.length) h += `<details><summary>In the parts file but no ${esc(CONFIG.PART_KEYWORD)} row (${res.noEntry.length})</summary>` + table([
+  if (res.noEntry.length) h += `<details><summary>In the parts file but no ${esc(item.label)} row (${res.noEntry.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.noEntry) + `</details>`;
   if (res.notInFile.length) h += `<details><summary>Not found in the parts file (${res.notInFile.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.notInFile) + `</details>`;
@@ -873,7 +894,7 @@ async function oilApply() {
   try {
     oilStatus("Re-checking " + lastOil.name + " before writing...");
     const wh = await loadSheet(lastOil.w);
-    const fresh = oilCompute(lastOil.partsRows, wh.rows);
+    const fresh = oilCompute(lastOil.partsRows, wh.rows, lastOil.item);
     const todo = [];
     const resolve = (list, sel, freshList) => {
       const fm = new Map(freshList.map(u => [u.vehicle, u]));
@@ -915,25 +936,43 @@ function oilDownload() {
   const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" }));
-  a.download = `oil-filter-${name.replace(/\W+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${lastOil.item.id}-${name.replace(/\W+/g, "_")}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
 }
 
-/* ---------- Print list: warehouse rows whose column E is above PRINT_MIN ---------- */
+/* ---------- Print list: every ready item whose KM column (kmCol) is above its printMin ---------- */
 function oilDueList(sheetRows) {
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
+  const items = CONFIG.ITEMS.filter(it => it.ready);
   const out = [];
   for (let r = hdr.headerRow + 1; r < sheetRows.length; r++) {
     const row = sheetRows[r] || [];
     const veh = String(row[hdr.vehicleCol] ?? "").trim();
     if (!veh) continue;
-    const e = parseMileage(row[CONFIG.PRINT_COL]);
-    if (isNaN(e) || !(e > CONFIG.PRINT_MIN)) continue;
     const m = parseMileage(row[hdr.mileageCol]);
-    out.push({ vehicle: veh, item: CONFIG.PART_KEYWORD, mileage: isNaN(m) ? (String(row[hdr.mileageCol] ?? "").trim() || "-") : fmt(m), eValue: fmt(e) });
+    const mileage = isNaN(m) ? (String(row[hdr.mileageCol] ?? "").trim() || "-") : fmt(m);
+    for (const it of items) {
+      const e = parseMileage(row[it.kmCol]);
+      if (isNaN(e) || !(e > it.printMin)) continue;
+      out.push({ vehicle: veh, item: it.label, mileage, eValue: fmt(e) });
+    }
   }
   return out;
+}
+
+/* Printed table: a vehicle that needs several items gets one row per item, with the vehicle number and
+   the current mileage merged (rowspan) over those rows. */
+function printTable(list) {
+  const groups = [];
+  list.forEach(r => { const g = groups[groups.length - 1]; if (g && g.vehicle === r.vehicle) g.rows.push(r); else groups.push({ vehicle: r.vehicle, mileage: r.mileage, rows: [r] }); });
+  let h = `<table><thead><tr><th>Vehicle number</th><th>Item to change</th><th>Current mileage</th><th>${esc(CONFIG.PRINT_LABEL)}</th></tr></thead><tbody>`;
+  groups.forEach(g => g.rows.forEach((r, i) => {
+    h += "<tr>" + (i === 0 ? `<td rowspan="${g.rows.length}" style="vertical-align:middle">${esc(g.vehicle)}</td>` : "") +
+      `<td>${esc(r.item)}</td>` + (i === 0 ? `<td rowspan="${g.rows.length}" style="vertical-align:middle">${esc(g.mileage)}</td>` : "") +
+      `<td>${esc(r.eValue)}</td></tr>`;
+  }));
+  return h + "</tbody></table>";
 }
 
 async function oilPrint() {
@@ -943,11 +982,12 @@ async function oilPrint() {
     oilStatus("Loading " + name + "...");
     const wh = await loadSheet(w);
     const list = oilDueList(wh.rows);
-    if (!list.length) { oilStatus(`No vehicle in ${name} has a value above ${fmt(CONFIG.PRINT_MIN)} in column ${colLetter(CONFIG.PRINT_COL)}. Nothing to print.`); return; }
-    $("printArea").innerHTML = `<h2>${esc(CONFIG.PART_KEYWORD)} - ${esc(name)}</h2>
-      <div class="meta">${esc(new Date().toLocaleDateString("en-GB"))} - ${list.length} vehicle${list.length > 1 ? "s" : ""}</div>` +
-      table([{ h: "Vehicle number", f: r => esc(r.vehicle) }, { h: "Item to change", f: r => esc(r.item) }, { h: "Current mileage", f: r => esc(r.mileage) }, { h: CONFIG.PRINT_LABEL, f: r => esc(r.eValue) }], list);
-    oilStatus(`${list.length} vehicle(s) found. Opening the print window...`);
+    if (!list.length) { oilStatus(`No maintenance is needed in ${name} right now. Nothing to print.`); return; }
+    const nVeh = new Set(list.map(x => x.vehicle)).size;
+    $("printArea").innerHTML = `<h2>Regular maintenance - ${esc(name)}</h2>
+      <div class="meta">${esc(new Date().toLocaleDateString("en-GB"))} - ${list.length} item${list.length > 1 ? "s" : ""} on ${nVeh} vehicle${nVeh > 1 ? "s" : ""}</div>` +
+      printTable(list);
+    oilStatus(`${list.length} item(s) found. Opening the print window...`);
     setTimeout(() => window.print(), 150);
   } catch (e) {
     console.error(e);
