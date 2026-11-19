@@ -115,6 +115,7 @@
       <label for="oitem">Item</label>
       <select id="oitem"></select>
     </div>
+    <div id="oitemhint" class="hint" style="margin-top:-6px"></div>
     <button id="ogo">Preview changes</button>
     <div id="ostatus" class="status"></div>
     <hr style="border:0;border-top:1px solid var(--line);margin:16px 0">
@@ -156,7 +157,10 @@ const CONFIG = {
   /* ---- Regular maintenance (parts file -> warehouse sheet) ----
      label    : name shown in the drop list and on the print
      keywords : words searched inside the Item/Service Description of the parts file
-                ("contains", ignores upper/lower case; any one of them is enough)
+                ("contains", ignores upper/lower case; any one entry is enough).
+                An entry that is a list, e.g. ["فلفلين", "90"], needs ALL its words in the same description.
+                A number inside a list (like "90") only matches as a whole number (so "190" does not count).
+     minQty   : optional. Only parts-file rows whose Quantity is GREATER than this number count.
      col      : warehouse column that receives the mileage of the last replacement (0=A, 1=B, 2=C, 3=D ...)
      kmCol    : warehouse column holding the KM since the last replacement (used by the print)
      printMin : the print lists the vehicle when its kmCol value is ABOVE this number
@@ -165,12 +169,12 @@ const CONFIG = {
     { id: "oil",  label: "Engine oil filter",   keywords: ["engine oil filter"],          col: 3, kmCol: 4, printMin: 9000,  ready: true },
     { id: "fuel", label: "Fuel filter",         keywords: ["fuel filter", "فلتر مازوت"],  col: 5, kmCol: 6, printMin: 39000, ready: true },
     { id: "air",  label: "Air filter",          keywords: ["air filter", "فلتر هواء"],    col: 7, kmCol: 8, printMin: 79000, ready: true },
-    { id: "val90",  label: "Val 90",            ready: false },
-    { id: "val140", label: "Val 140",           ready: false },
+    { id: "val90",  label: "Val 90",            keywords: [["فلفلين", "90"], ["فلفولين", "90"]],   minQty: 3, col: 9,  kmCol: 10, printMin: 29000, ready: true },
+    { id: "val140", label: "Val 140",           keywords: [["فلفلين", "140"], ["فلفولين", "140"]], minQty: 3, col: 11, kmCol: 12, printMin: 29000, ready: true },
     { id: "fbrake", label: "Front brake pads",  ready: false },
     { id: "rbrake", label: "Rear brake pads",   ready: false },
     { id: "clutch", label: "Transmission clutch", ready: false },
-    { id: "at",     label: "AT oil",            ready: false }
+    { id: "at",     label: "AT oil",            keywords: ["زيت اوتوماتيك"],                       minQty: 1, col: 19, kmCol: 20, printMin: 59000, ready: true }
   ],
   PARTS_CAR_HEADERS: ["car"],
   PARTS_MILEAGE_HEADERS: ["mileage"],
@@ -401,6 +405,12 @@ function init() {
   CONFIG.ITEMS.forEach(it => { const o = document.createElement("option"); o.value = it.id; o.textContent = it.label + (it.ready ? "" : " (coming soon)"); o.disabled = !it.ready; isel.appendChild(o); });
   $("oprinthint").textContent = "Print all the maintenance needed in the selected warehouse: " +
     CONFIG.ITEMS.filter(it => it.ready).map(it => `${it.label.toLowerCase()} (column ${colLetter(it.kmCol)} above ${fmt(it.printMin)})`).join(", ") + ".";
+  const showRule = () => {
+    const it = CONFIG.ITEMS.find(x => x.id === isel.value); if (!it || !it.keywords) { $("oitemhint").textContent = ""; return; }
+    const kw = it.keywords.map(k => Array.isArray(k) ? "(" + k.join(" + ") + ")" : k).join("  or  ");
+    $("oitemhint").textContent = `Looks for: ${kw}` + (it.minQty !== undefined ? ` - Quantity above ${it.minQty}` : "") + ` - writes to column ${colLetter(it.col)}.`;
+  };
+  isel.addEventListener("change", showRule); showRule();
   $("ogo").addEventListener("click", oilRun);
   $("oprint").addEventListener("click", oilPrint);
   $("oresults").addEventListener("change", oilOnChange);
@@ -674,36 +684,49 @@ function downloadReport() {
 }
 
 /* ============================ PART REPLACEMENT UPDATE (e.g. Engine oil filter) ============================ */
-const normText = v => String(v ?? "").toLowerCase().replace(/[\u064B-\u065F\u0640]/g, "").replace(/\s+/g, " ").trim();
+/* Lower-cases, removes Arabic diacritics/tatweel, treats أ إ آ as ا and ى as ي, and collapses spaces
+   (so "زيت أوتوماتيك" and "زيت اوتوماتيك" are the same for the search). */
+const normText = v => String(v ?? "").toLowerCase().replace(/[\u064B-\u065F\u0640]/g, "").replace(/[\u0622\u0623\u0625]/g, "\u0627").replace(/\u0649/g, "\u064A").replace(/\s+/g, " ").trim();
 
 /* Finds the Car / Mileage / Description columns of the parts file (falls back to B, C, J). */
 function findPartsCols(rows, maxScan = 15) {
   for (let r = 0; r < Math.min(rows.length, maxScan); r++) {
-    let car = -1, mil = -1, desc = -1;
+    let car = -1, mil = -1, desc = -1, qty = -1;
     (rows[r] || []).forEach((cell, c) => {
       const h = normHeader(cell);
+      if (qty < 0 && (h === "quantity" || h === "qty")) qty = c;
       if (car < 0 && CONFIG.PARTS_CAR_HEADERS.includes(h)) car = c;
       if (mil < 0 && CONFIG.PARTS_MILEAGE_HEADERS.includes(h)) mil = c;
       if (desc < 0 && CONFIG.PARTS_DESC_HEADERS.some(k => h.includes(k))) desc = c;
     });
-    if (car >= 0 && mil >= 0 && desc >= 0) return { headerRow: r, car, mil, desc, fallback: false };
+    if (car >= 0 && mil >= 0 && desc >= 0) return { headerRow: r, car, mil, desc, qty, fallback: false };
   }
   const start = isNaN(parseMileage((rows[0] || [])[2])) ? 1 : 0;
-  return { headerRow: start - 1, car: 1, mil: 2, desc: 9, fallback: true };
+  return { headerRow: start - 1, car: 1, mil: 2, desc: 9, qty: 10, fallback: true };
 }
+
+/* Builds the keyword test for an item: a plain entry must be contained in the description; an entry that is
+   a list needs all its words. Words made only of digits must match as a whole number (90 does not match 190). */
+function compileKeywords(kws) {
+  const tok = t => { t = normText(t); return /^\d+$/.test(t) ? (d => new RegExp("(?<!\\d)" + t + "(?!\\d)").test(d)) : (d => d.includes(t)); };
+  const tests = kws.map(k => { const ts = (Array.isArray(k) ? k : [k]).map(tok); return d => ts.every(f => f(d)); });
+  return d => tests.some(f => f(d));
+}
+const itemDesc = it => it.label + (it.minQty !== undefined ? ` (quantity above ${it.minQty})` : "");
 
 /* Pure logic. For each vehicle of the warehouse sheet: rows of the parts file whose Car contains the
    vehicle number AND whose description contains the keyword -> highest mileage -> warehouse column D.
    Only rule: the new value must not be lower than the current one. */
 function oilCompute(partsRows, sheetRows, item) {
   const pc = findPartsCols(partsRows);
-  const kws = item.keywords.map(normText);
-  const carN = [], isPart = [], mil = [], rowNo = [];
+  const match = compileKeywords(item.keywords);
+  const needQty = item.minQty !== undefined, qIdx = pc.qty >= 0 ? pc.qty : 10;
+  const carN = [], isPart = [], mil = [], qty = [], rowNo = [];
   for (let r = pc.headerRow + 1; r < partsRows.length; r++) {
     const row = partsRows[r] || [];
     const c = normVehicle(row[pc.car]);
     if (!c) continue;
-    carN.push(c); { const d = normText(row[pc.desc]); isPart.push(kws.some(k => d.includes(k))); } mil.push(parseMileage(row[pc.mil])); rowNo.push(r + 1);
+    carN.push(c); isPart.push(match(normText(row[pc.desc]))); mil.push(parseMileage(row[pc.mil])); qty.push(needQty ? parseMileage(row[qIdx]) : 0); rowNo.push(r + 1);
   }
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
@@ -716,17 +739,23 @@ function oilCompute(partsRows, sheetRows, item) {
     if (hits.length > 1) { errors.push({ type: "Duplicate vehicle in warehouse", vehicle: display, detail: `Vehicle ${display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
     const r = hits[0], sheetRow = r + 1, cell = `${L}${sheetRow}`;
 
-    let anyCar = false, best = null; const bad = [], cars = new Set();
+    let anyCar = false, best = null, lowQty = false; const bad = [], badQ = [], cars = new Set();
     for (let i = 0; i < carN.length; i++) {
       if (!carN[i].includes(key)) continue;
       anyCar = true;
       if (!isPart[i]) continue;
+      if (needQty) {
+        if (isNaN(qty[i])) { badQ.push(rowNo[i]); continue; }
+        if (!(qty[i] > item.minQty)) { lowQty = true; continue; }
+      }
       cars.add(carN[i]);
       if (isNaN(mil[i])) { bad.push(rowNo[i]); continue; }
       if (!best || mil[i] > best.mileage) best = { mileage: mil[i], row: rowNo[i], car: carN[i] };
     }
     if (!best) {
-      if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
+      if (!bad.length && badQ.length && !lowQty) errors.push({ type: "Invalid quantity in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${badQ.join(", ")}) have no valid Quantity. Not updated.` });
+      else if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
+      else if (lowQty) noEntry.push({ vehicle: display, detail: `Vehicle ${display} has "${item.label}" row(s) in the parts file, but the Quantity is not above ${item.minQty}.` });
       else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${item.label}" row.` });
       else notInFile.push({ vehicle: display, detail: `Vehicle ${display} was not found in the parts file.` });
       continue;
@@ -738,6 +767,7 @@ function oilCompute(partsRows, sheetRows, item) {
       warnings.push({ vehicle: display, detail: `Vehicle ${display} matched ${cars.size} different Car values in the parts file: ${shown}. The highest mileage ${fmt(best.mileage)} came from Car ${best.car} (parts file row ${best.row}).` });
     }
     if (bad.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${bad.join(", ")} were ignored because their mileage is not a valid number.` });
+    if (badQ.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${badQ.join(", ")} were ignored because their Quantity is not a valid number.` });
 
     const rawOld = (sheetRows[r] || [])[col];
     if (String(rawOld ?? "").trim() === "") { updates.push({ vehicle: display, old: "(empty)", next: best.mileage, diff: "-", cell, sheetRow, note: note || "Old value was empty" }); continue; }
@@ -748,7 +778,7 @@ function oilCompute(partsRows, sheetRows, item) {
     if (diff === 0) { unchanged.push({ vehicle: display, old, cell, detail: `Vehicle ${display}: already ${fmt(old)} in cell ${cell}. Nothing changed.` }); continue; }
     updates.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note });
   }
-  return { updates, lowers, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback };
+  return { updates, lowers, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback, qtyFallback: needQty && pc.qty < 0 && !pc.fallback };
 }
 
 let lastOil = null;   // { name, w, item, res, partsRows, applied }
@@ -792,7 +822,8 @@ function oilRender() {
   const ups = res.updates, lows = res.lowers;
   const doneN = ups.concat(lows).filter(u => u.status === "done").length;
   let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(item.label)} - ${esc(name)}</h2>`;
-  if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage) and J (Description) were used.</div>`;
+  if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage), J (Description) and K (Quantity) were used.</div>`;
+  if (res.qtyFallback) h += `<div class="banner warn">The Quantity header was not found in the parts file, so column K was used for the quantity.</div>`;
   h += `<div class="stats">
     <div class="stat s-ok"><b>${applied ? doneN : ups.length}</b><span>${applied ? "Updated" : "Would be updated"}</span></div>
     <div class="stat s-err"><b>${res.errors.length}</b><span>Errors</span></div>
@@ -840,7 +871,7 @@ function oilRender() {
 
   if (res.unchanged.length) h += `<details><summary>Unchanged (${res.unchanged.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.unchanged) + `</details>`;
-  if (res.noEntry.length) h += `<details><summary>In the parts file but no ${esc(item.label)} row (${res.noEntry.length})</summary>` + table([
+  if (res.noEntry.length) h += `<details><summary>In the parts file but no ${esc(itemDesc(item))} row (${res.noEntry.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.noEntry) + `</details>`;
   if (res.notInFile.length) h += `<details><summary>Not found in the parts file (${res.notInFile.length})</summary>` + table([
     { h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Details", f: r => esc(r.detail), cls: "msg" }], res.notInFile) + `</details>`;
