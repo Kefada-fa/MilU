@@ -55,6 +55,10 @@
   .status { font-size:14px; color:var(--muted); margin-top:10px; min-height:20px; }
   .hint { font-size:13px; color:var(--muted); margin:-6px 0 12px; }
   details { margin-top:14px; } summary { cursor:pointer; font-weight:600; font-size:15px; }
+  /* three sections, each with its own border and tint (results use the colour of their section) */
+  .sec-search { background:#eef4ff; border:2px solid #7f9fe8; } .sec-search > h2 { color:#2c4fa8; }
+  .sec-update, #results > .card { background:#edf9f0; border:2px solid #6fbf8a; } .sec-update > h2 { color:#1f7a42; }
+  .sec-maint, #oresults > .card { background:#f4efff; border:2px solid #a58be8; } .sec-maint > h2 { color:#5b3cc4; }
   #printArea { display:none; }
   @media print { body { background:#fff; } .wrap { display:none !important; } #printArea { display:block; color:#000; font-family:system-ui,Arial,sans-serif; }
     #printArea h2 { font-size:20px; margin:0 0 4px; } #printArea .meta { font-size:13px; margin-bottom:12px; }
@@ -69,7 +73,8 @@
   <div id="cfgBanner"></div>
 
   <!-- ===== Vehicle search ===== -->
-  <div class="card">
+  <div class="card sec-search">
+    <h2 style="margin-top:0">Vehicle search</h2>
     <label for="q">Search a vehicle</label>
     <div class="searchrow">
       <input id="q" type="text" placeholder="Vehicle number" autocomplete="off">
@@ -80,7 +85,8 @@
   </div>
 
   <!-- ===== Work station ===== -->
-  <div class="card">
+  <div class="card sec-update">
+    <h2 style="margin-top:0">Mileage update</h2>
     <div class="row">
       <label for="wh">Warehouse</label>
       <select id="wh"></select>
@@ -100,9 +106,9 @@
   <div id="results"></div>
 
   <!-- ===== Regular maintenance update ===== -->
-  <div class="card">
+  <div class="card sec-maint">
     <h2 style="margin-top:0">Regular maintenance update</h2>
-    <div class="hint">Upload the big parts file (Car, Mileage, Item/Service Description). For every vehicle in the chosen warehouse, the highest mileage of its replacements of the selected item is prepared for that item's column in the warehouse sheet. You review the list, untick any vehicle you don't want, then press Update selected. Vehicles whose new mileage is lower than the current one are listed separately and are not ticked.</div>
+    <div class="hint">Upload the big parts file (Car, Mileage, Del Date, Item/Service Description). For every vehicle in the chosen warehouse, the mileage of the MOST RECENT replacement (by Del Date) of the selected item is prepared (when the highest mileage is not the most recent entry, you choose which one to use) for that item's column in the warehouse sheet. You review the list, untick any vehicle you don't want, then press Update selected. Vehicles whose new mileage is lower than the current one are listed separately and are not ticked.</div>
     <div class="row">
       <label for="owh">Warehouse</label>
       <select id="owh"></select>
@@ -178,6 +184,7 @@ const CONFIG = {
   ],
   PARTS_CAR_HEADERS: ["car"],
   PARTS_MILEAGE_HEADERS: ["mileage"],
+  PARTS_DATE_HEADERS: ["del date", "delivery date", "date"],
   PARTS_DESC_HEADERS: ["description"], // any header that contains this word
   PRINT_LABEL: "KM"                    // title of the KM column in the printed table
 };
@@ -691,18 +698,19 @@ const normText = v => String(v ?? "").toLowerCase().replace(/[\u064B-\u065F\u064
 /* Finds the Car / Mileage / Description columns of the parts file (falls back to B, C, J). */
 function findPartsCols(rows, maxScan = 15) {
   for (let r = 0; r < Math.min(rows.length, maxScan); r++) {
-    let car = -1, mil = -1, desc = -1, qty = -1;
+    let car = -1, mil = -1, desc = -1, qty = -1, date = -1;
     (rows[r] || []).forEach((cell, c) => {
       const h = normHeader(cell);
       if (qty < 0 && (h === "quantity" || h === "qty")) qty = c;
+      if (date < 0 && CONFIG.PARTS_DATE_HEADERS.includes(h)) date = c;
       if (car < 0 && CONFIG.PARTS_CAR_HEADERS.includes(h)) car = c;
       if (mil < 0 && CONFIG.PARTS_MILEAGE_HEADERS.includes(h)) mil = c;
       if (desc < 0 && CONFIG.PARTS_DESC_HEADERS.some(k => h.includes(k))) desc = c;
     });
-    if (car >= 0 && mil >= 0 && desc >= 0) return { headerRow: r, car, mil, desc, qty, fallback: false };
+    if (car >= 0 && mil >= 0 && desc >= 0) return { headerRow: r, car, mil, desc, qty, date, fallback: false };
   }
   const start = isNaN(parseMileage((rows[0] || [])[2])) ? 1 : 0;
-  return { headerRow: start - 1, car: 1, mil: 2, desc: 9, qty: 10, fallback: true };
+  return { headerRow: start - 1, car: 1, mil: 2, desc: 9, qty: 10, date: 4, fallback: true };
 }
 
 /* Builds the keyword test for an item: a plain entry must be contained in the description; an entry that is
@@ -714,32 +722,67 @@ function compileKeywords(kws) {
 }
 const itemDesc = it => it.label + (it.minQty !== undefined ? ` (quantity above ${it.minQty})` : "");
 
+/* ---------- Dates of the parts file (Del Date) ---------- */
+function validYMD(y, mo, d) {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return NaN;
+  const t = Date.UTC(y, mo - 1, d), dt = new Date(t);
+  return dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d ? t : NaN;
+}
+/* Reads an Excel date (serial number), a Date, or text like 15/02/2019 (day/month/year) or 2019-02-15. Returns UTC ms or NaN. */
+function parseDelDate(v) {
+  if (v instanceof Date) return isNaN(v) ? NaN : Date.UTC(v.getFullYear(), v.getMonth(), v.getDate());
+  if (typeof v === "number") return v >= 20000 && v <= 80000 ? Date.UTC(1899, 11, 30) + Math.floor(v) * 86400000 : NaN;
+  const s = String(v ?? "").trim();
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2}|\d{4})(?:\s.*)?$/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; return validYMD(y, +m[2], +m[1]); }
+  m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?:[T\s].*)?$/);
+  if (m) return validYMD(+m[1], +m[2], +m[3]);
+  return NaN;
+}
+const fmtDate = t => { if (isNaN(t)) return "-"; const d = new Date(t); return String(d.getUTCDate()).padStart(2, "0") + "/" + String(d.getUTCMonth() + 1).padStart(2, "0") + "/" + d.getUTCFullYear(); };
+
 /* Pure logic. For each vehicle of the warehouse sheet: rows of the parts file whose Car contains the
-   vehicle number AND whose description contains the keyword -> highest mileage -> warehouse column D.
-   Only rule: the new value must not be lower than the current one. */
+   vehicle number AND whose description matches the item (and quantity rule) -> the MOST RECENT one by
+   Del Date (same date: the higher mileage) -> the item's warehouse column. When the vehicle has entries
+   with different mileages, a message lists them. A value lower than the current one is not an error:
+   it is listed in "lowers" and only written if the person ticks it.
+   New KM = the vehicle's current Mileage minus the new value (checked against the sheet's own KM column). */
 function oilCompute(partsRows, sheetRows, item) {
   const pc = findPartsCols(partsRows);
+  if (pc.date < 0) throw new Error('Could not find the "Del Date" column in the parts file (looked for: ' + CONFIG.PARTS_DATE_HEADERS.join(", ") + '). Nothing was written.');
   const match = compileKeywords(item.keywords);
   const needQty = item.minQty !== undefined, qIdx = pc.qty >= 0 ? pc.qty : 10;
-  const carN = [], isPart = [], mil = [], qty = [], rowNo = [];
+  const carN = [], carRaw = [], isPart = [], mil = [], qty = [], dt = [], rowNo = [];
   for (let r = pc.headerRow + 1; r < partsRows.length; r++) {
     const row = partsRows[r] || [];
     const c = normVehicle(row[pc.car]);
     if (!c) continue;
-    carN.push(c); isPart.push(match(normText(row[pc.desc]))); mil.push(parseMileage(row[pc.mil])); qty.push(needQty ? parseMileage(row[qIdx]) : 0); rowNo.push(r + 1);
+    carN.push(c); carRaw.push(String(row[pc.car] ?? "").trim()); isPart.push(match(normText(row[pc.desc]))); mil.push(parseMileage(row[pc.mil])); qty.push(needQty ? parseMileage(row[qIdx]) : 0);
+    dt.push(parseDelDate(row[pc.date])); rowNo.push(r + 1);
   }
   const hdr = findHeaderRow(sheetRows);
   if (!hdr) throw new Error("Could not find the vehicle number and mileage column headers in the warehouse sheet (looked in the first 15 rows). Check the header names in CONFIG.");
   const index = buildIndex(sheetRows, hdr);
-  const col = item.col, L = colLetter(col);
-  const updates = [], lowers = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
+  const col = item.col, L = colLetter(col), lab = item.label;
+  const updates = [], lowers = [], choices = [], errors = [], unchanged = [], noEntry = [], notInFile = [], warnings = [];
+
+  /* does the sheet's own KM column follow "Mileage - replaced-at"? (used to trust the New KM column) */
+  let kmOk = 0, kmN = 0;
+  for (const [, hits] of index) {
+    if (hits.length > 1) continue;
+    const row = sheetRows[hits[0]] || [];
+    const m = parseMileage(row[hdr.mileageCol]), d = parseMileage(row[col]), e = parseMileage(row[item.kmCol]);
+    if (isNaN(m) || isNaN(d) || isNaN(e)) continue;
+    kmN++; if (Math.abs((m - d) - e) <= 1) kmOk++;
+  }
 
   for (const [key, hits] of index) {
     const display = String((sheetRows[hits[0]] || [])[hdr.vehicleCol] ?? "").trim();
     if (hits.length > 1) { errors.push({ type: "Duplicate vehicle in warehouse", vehicle: display, detail: `Vehicle ${display} appears ${hits.length} times in the warehouse sheet (rows ${hits.map(h => h + 1).join(", ")}). Not updated - fix the sheet first.` }); continue; }
     const r = hits[0], sheetRow = r + 1, cell = `${L}${sheetRow}`;
+    const curM = parseMileage((sheetRows[r] || [])[hdr.mileageCol]);
 
-    let anyCar = false, best = null, lowQty = false; const bad = [], badQ = [], cars = new Set();
+    let anyCar = false, lowQty = false; const cands = [], bad = [], badQ = [];
     for (let i = 0; i < carN.length; i++) {
       if (!carN[i].includes(key)) continue;
       anyCar = true;
@@ -748,37 +791,69 @@ function oilCompute(partsRows, sheetRows, item) {
         if (isNaN(qty[i])) { badQ.push(rowNo[i]); continue; }
         if (!(qty[i] > item.minQty)) { lowQty = true; continue; }
       }
-      cars.add(carN[i]);
       if (isNaN(mil[i])) { bad.push(rowNo[i]); continue; }
-      if (!best || mil[i] > best.mileage) best = { mileage: mil[i], row: rowNo[i], car: carN[i] };
+      cands.push({ mileage: mil[i], date: dt[i], row: rowNo[i], car: carN[i], carRaw: carRaw[i] });
     }
-    if (!best) {
-      if (!bad.length && badQ.length && !lowQty) errors.push({ type: "Invalid quantity in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${badQ.join(", ")}) have no valid Quantity. Not updated.` });
-      else if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${item.label}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
-      else if (lowQty) noEntry.push({ vehicle: display, detail: `Vehicle ${display} has "${item.label}" row(s) in the parts file, but the Quantity is not above ${item.minQty}.` });
-      else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${item.label}" row.` });
+    if (!cands.length) {
+      if (!bad.length && badQ.length && !lowQty) errors.push({ type: "Invalid quantity in parts file", vehicle: display, detail: `Vehicle ${display}: the "${lab}" row(s) in the parts file (row ${badQ.join(", ")}) have no valid Quantity. Not updated.` });
+      else if (bad.length) errors.push({ type: "Invalid mileage in parts file", vehicle: display, detail: `Vehicle ${display}: the "${lab}" row(s) in the parts file (row ${bad.join(", ")}) have no valid mileage. Not updated.` });
+      else if (lowQty) noEntry.push({ vehicle: display, detail: `Vehicle ${display} has "${lab}" row(s) in the parts file, but the Quantity is not above ${item.minQty}.` });
+      else if (anyCar) noEntry.push({ vehicle: display, detail: `Vehicle ${display} is in the parts file but has no "${lab}" row.` });
       else notInFile.push({ vehicle: display, detail: `Vehicle ${display} was not found in the parts file.` });
       continue;
     }
-    let note = "";
+    const dated = cands.filter(c => !isNaN(c.date)), undated = cands.filter(c => isNaN(c.date));
+    if (!dated.length) { errors.push({ type: "Invalid date in parts file", vehicle: display, detail: `Vehicle ${display}: the "${lab}" row(s) in the parts file (row ${undated.map(c => c.row).join(", ")}) have no valid Del Date, so the most recent one can't be chosen. Not updated.` }); continue; }
+    let best = dated[0];
+    dated.forEach(c => { if (c.date > best.date || (c.date === best.date && c.mileage > best.mileage)) best = c; });
+
+    const notes = [];
+    const rawOld0 = (sheetRows[r] || [])[col];
+    const emptyOld = String(rawOld0 ?? "").trim() === "", oldNum = parseMileage(rawOld0);
+    const maxM = Math.max(...cands.map(c => c.mileage));
+    if (maxM > best.mileage) {
+      /* The highest mileage is NOT the most recent entry: show every entry and let the person decide. */
+      if (!emptyOld && isNaN(oldNum)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld0}" which is not a number. Nothing was written.` }); continue; }
+      const pm = new Map();
+      cands.forEach(c => {
+        const k = c.mileage + "|" + c.date + "|" + c.car;
+        if (!pm.has(k)) pm.set(k, { mileage: c.mileage, dateTs: c.date, date: fmtDate(c.date), car: c.carRaw, rows: [] });
+        pm.get(k).rows.push(c.row);
+      });
+      const options = [...pm.values()].sort((a, b) => ((isNaN(b.dateTs) ? -Infinity : b.dateTs) - (isNaN(a.dateTs) ? -Infinity : a.dateTs)) || (b.mileage - a.mileage));
+      options.forEach(o => {
+        o.diff = emptyOld ? "-" : o.mileage - oldNum;
+        o.lower = !emptyOld && o.mileage < oldNum;
+        o.newKm = isNaN(curM) ? "-" : curM - o.mileage;
+        o.recent = o.dateTs === best.date;
+        o.highest = o.mileage === maxM;
+      });
+      choices.push({ vehicle: display, old: emptyOld ? "(empty)" : oldNum, cell, sheetRow, options });
+      continue;
+    }
+    if (undated.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${undated.map(c => c.row).join(", ")} have no valid Del Date and were ignored. They could be more recent - please check.` });
+    const cars = new Set(cands.map(c => c.car));
     if (cars.size > 1) {
       const list = [...cars]; const shown = list.slice(0, 5).join(", ") + (list.length > 5 ? `, ... (+${list.length - 5})` : "");
-      note = `Matched ${cars.size} different Car values (${shown}). Used Car ${best.car}, parts file row ${best.row}. Please check.`;
-      warnings.push({ vehicle: display, detail: `Vehicle ${display} matched ${cars.size} different Car values in the parts file: ${shown}. The highest mileage ${fmt(best.mileage)} came from Car ${best.car} (parts file row ${best.row}).` });
+      notes.push(`Matched ${cars.size} different Car values (${shown}). Used Car ${best.car}. Please check.`);
+      warnings.push({ vehicle: display, detail: `Vehicle ${display} matched ${cars.size} different Car values in the parts file: ${shown}. The entry used (${fmt(best.mileage)} on ${fmtDate(best.date)}) came from Car ${best.car}.` });
     }
     if (bad.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${bad.join(", ")} were ignored because their mileage is not a valid number.` });
     if (badQ.length) warnings.push({ vehicle: display, detail: `Vehicle ${display}: parts file row(s) ${badQ.join(", ")} were ignored because their Quantity is not a valid number.` });
+    if (!isNaN(curM) && best.mileage > curM) notes.push("The new value is higher than the vehicle's current mileage.");
 
+    const newKm = isNaN(curM) ? "-" : curM - best.mileage, date = fmtDate(best.date);
     const rawOld = (sheetRows[r] || [])[col];
-    if (String(rawOld ?? "").trim() === "") { updates.push({ vehicle: display, old: "(empty)", next: best.mileage, diff: "-", cell, sheetRow, note: note || "Old value was empty" }); continue; }
+    if (String(rawOld ?? "").trim() === "") { updates.push({ vehicle: display, old: "(empty)", next: best.mileage, diff: "-", newKm, date, cell, sheetRow, note: notes.join(" ") || "Old value was empty" }); continue; }
     const old = parseMileage(rawOld);
-    if (isNaN(old)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} (parts file row ${best.row}) was not written.` }); continue; }
+    if (isNaN(old)) { errors.push({ type: "Old value unreadable", vehicle: display, detail: `Vehicle ${display}: cell ${cell} in the warehouse is "${rawOld}" which is not a number. New value ${fmt(best.mileage)} was not written.` }); continue; }
     const diff = best.mileage - old;
-    if (diff < 0) { lowers.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note: `Parts file row ${best.row}.` + (note ? " " + note : "") }); continue; }
+    if (diff < 0) { lowers.push({ vehicle: display, old, next: best.mileage, diff, newKm, date, cell, sheetRow, note: notes.join(" ") }); continue; }
     if (diff === 0) { unchanged.push({ vehicle: display, old, cell, detail: `Vehicle ${display}: already ${fmt(old)} in cell ${cell}. Nothing changed.` }); continue; }
-    updates.push({ vehicle: display, old, next: best.mileage, diff, cell, sheetRow, note });
+    updates.push({ vehicle: display, old, next: best.mileage, diff, newKm, date, cell, sheetRow, note: notes.join(" ") });
   }
-  return { updates, lowers, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback, qtyFallback: needQty && pc.qty < 0 && !pc.fallback };
+  return { updates, lowers, choices, errors, unchanged, noEntry, notInFile, warnings, usedFallback: pc.fallback, qtyFallback: needQty && pc.qty < 0 && !pc.fallback,
+           kmCheck: kmN ? { ok: kmOk, n: kmN } : null };
 }
 
 let lastOil = null;   // { name, w, item, res, partsRows, applied }
@@ -801,7 +876,7 @@ async function oilRun() {
     await new Promise(r => setTimeout(r, 30));
     const res = oilCompute(partsRows, wh.rows, item);
     lastOil = { name, w, item, res, partsRows, applied: false };
-    oilStatus(res.updates.length ? "Preview ready. Nothing has been written yet. Untick any vehicle you don't want to update, then press Update selected." : "Preview ready. There is nothing to update.");
+    oilStatus(res.updates.length || res.lowers.length || res.choices.length ? "Preview ready. Nothing has been written yet. Untick any vehicle you don't want to update, pick an entry for the vehicles that need your choice, then press Update selected." : "Preview ready. There is nothing to update.");
     oilRender();
   } catch (e) {
     console.error(e);
@@ -820,14 +895,16 @@ function oilStateTag(u) {
 function oilRender() {
   const { name, res, applied, item } = lastOil;
   const ups = res.updates, lows = res.lowers;
-  const doneN = ups.concat(lows).filter(u => u.status === "done").length;
+  const doneN = ups.concat(lows, res.choices).filter(u => u.status === "done").length;
   let h = `<div class="card"><h2 style="margin-top:0">${applied ? "Result" : "Preview"} - ${esc(item.label)} - ${esc(name)}</h2>`;
   if (res.usedFallback) h += `<div class="banner warn">Header names were not recognised in the parts file, so columns B (Car), C (Mileage), J (Description) and K (Quantity) were used.</div>`;
+  if (res.kmCheck && res.kmCheck.ok < res.kmCheck.n * 0.8) h += `<div class="banner warn"><b>Check the New KM column:</b> it is calculated as the vehicle's current Mileage minus the new value, but in this sheet column ${colLetter(item.kmCol)} follows that rule for only ${res.kmCheck.ok} of ${res.kmCheck.n} vehicles.</div>`;
   if (res.qtyFallback) h += `<div class="banner warn">The Quantity header was not found in the parts file, so column K was used for the quantity.</div>`;
   h += `<div class="stats">
     <div class="stat s-ok"><b>${applied ? doneN : ups.length}</b><span>${applied ? "Updated" : "Would be updated"}</span></div>
     <div class="stat s-err"><b>${res.errors.length}</b><span>Errors</span></div>
     <div class="stat s-warn"><b>${lows.length}</b><span>Lower than current</span></div>
+    <div class="stat s-warn"><b>${res.choices.length}</b><span>Need your choice</span></div>
     <div class="stat s-info"><b>${res.unchanged.length}</b><span>Unchanged</span></div>
     <div class="stat s-warn"><b>${res.noEntry.length + res.notInFile.length}</b><span>No ${esc(item.label)} entry</span></div></div>
     <div class="actions"><button class="secondary" id="odl">Download report (CSV)</button></div>`;
@@ -854,7 +931,7 @@ function oilRender() {
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="oall" checked title="Select / unselect all">`, f: r => `<input type="checkbox" class="ochk" data-i="${r.i}" checked>` });
     cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Before", f: r => esc(fmt(r.old)) }, { h: "After", f: r => esc(fmt(r.next)) },
-      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
+      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "New KM", f: r => esc(fmt(r.newKm)) }, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
     h += table(cols, ups.map((u, i) => Object.assign({}, u, { i })));
   }
 
@@ -865,8 +942,27 @@ function oilRender() {
     cols.push(applied ? { h: "Status", f: r => oilStateTag(r) }
       : { h: "", hraw: `<input type="checkbox" id="olall" title="Select / unselect all">`, f: r => `<input type="checkbox" class="olow" data-i="${r.i}">` });
     cols.push({ h: "Vehicle", f: r => esc(r.vehicle) }, { h: "Current", f: r => esc(fmt(r.old)) }, { h: "New (parts file)", f: r => esc(fmt(r.next)) },
-      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
+      { h: "Difference", f: r => esc(fmt(r.diff)) }, { h: "New KM", f: r => esc(fmt(r.newKm)) }, { h: "Replaced on", f: r => esc(r.date) }, { h: "Cell", f: r => esc(r.cell) }, { h: "Note", f: r => esc(r.note), cls: "msg" });
     h += table(cols, lows.map((u, i) => Object.assign({}, u, { i }))) + `</div>`;
+  }
+
+  if (res.choices.length) {
+    h += `<div class="ybox"><h2>Choose which entry to use</h2>`;
+    if (!applied) h += `<p style="margin:0 0 10px;font-size:14px">For these vehicles the highest mileage is <b>not</b> the most recent entry. Pick the entry you want for each vehicle, or leave "Don't update". Nothing is written unless you pick one.</p>` + bar();
+    res.choices.forEach((c, ci) => {
+      h += `<h3>Vehicle ${esc(c.vehicle)} <span style="font-weight:400;color:var(--muted)">- current value in ${esc(c.cell)}: ${esc(fmt(c.old))}</span></h3>`;
+      if (applied) { h += `<p style="margin:0 0 6px;font-size:14px">${oilChoiceResult(c)}</p>`; return; }
+      const rows = c.options.map((o, oi) => Object.assign({}, o, { oi })).concat([{ none: true }]);
+      const tags = r => (r.recent ? ' <span class="tag t-ok">most recent</span>' : "") + (r.highest ? ' <span class="tag t-info">highest mileage</span>' : "") + (r.lower ? ' <span class="tag t-err">lower than current</span>' : "");
+      h += table([
+        { h: "Use", f: r => `<input type="radio" class="ocho" name="och${ci}" data-c="${ci}" value="${r.none ? -1 : r.oi}" ${r.none ? "checked" : ""}>` },
+        { h: "Mileage", f: r => r.none ? "<i>Don't update this vehicle</i>" : "<b>" + esc(fmt(r.mileage)) + "</b>" + tags(r) },
+        { h: "Date", f: r => r.none ? "" : esc(r.date) },
+        { h: "Car (as in parts file)", f: r => r.none ? "" : esc(r.car) },
+        { h: "Difference", f: r => r.none ? "" : esc(fmt(r.diff)) },
+        { h: "New KM", f: r => r.none ? "" : esc(fmt(r.newKm)) }], rows);
+    });
+    h += `</div>`;
   }
 
   if (res.unchanged.length) h += `<details><summary>Unchanged (${res.unchanged.length})</summary>` + table([
@@ -881,11 +977,17 @@ function oilRender() {
   oilCount();
 }
 
+function oilChoiceResult(c) {
+  if (c.status === "done") return `<span class="tag t-ok">Updated</span> ${esc(fmt(c.chosen.mileage))} (${esc(c.chosen.date)}, Car ${esc(c.chosen.car)}) was written to ${esc(c.cell)}.`;
+  if (c.status === "changed") return `<span class="tag t-err">Not updated (sheet changed)</span>`;
+  return `<span class="tag t-info">Not updated</span>`;
+}
+
 function oilBoxes() { return [...document.querySelectorAll("#oresults input.ochk, #oresults input.olow")]; }
 
 function oilCount() {
   const btn = $("oapply"); if (!btn) return;
-  const n = oilBoxes().filter(b => b.checked).length;
+  const n = oilBoxes().filter(b => b.checked).length + [...document.querySelectorAll("#oresults input.ocho:checked")].filter(b => b.value !== "-1").length;
   btn.textContent = `Update selected (${n})`;
   btn.disabled = n === 0;
   [["ochk", "oall"], ["olow", "olall"]].forEach(([cls, hid]) => {
@@ -901,7 +1003,7 @@ function oilOnChange(e) {
   const id = e.target.id;
   if (id === "oall") document.querySelectorAll("#oresults input.ochk").forEach(b => b.checked = e.target.checked);
   if (id === "olall") document.querySelectorAll("#oresults input.olow").forEach(b => b.checked = e.target.checked);
-  if (id === "oall" || id === "olall" || e.target.classList.contains("ochk") || e.target.classList.contains("olow")) oilCount();
+  if (id === "oall" || id === "olall" || e.target.classList.contains("ochk") || e.target.classList.contains("olow") || e.target.classList.contains("ocho")) oilCount();
 }
 
 function oilOnClick(e) {
@@ -919,8 +1021,11 @@ async function oilApply() {
     if (b.classList.contains("olow")) selL.add(lows[Number(b.dataset.i)].vehicle);
     else selU.add(ups[Number(b.dataset.i)].vehicle);
   });
-  if (!selU.size && !selL.size) return;
-  if (selL.size && !window.confirm(`You ticked ${selL.size} vehicle(s) whose new mileage is LOWER than the current value. They will be overwritten with the lower value. Continue?`)) return;
+  const chs = lastOil.res.choices, selC = new Map();
+  document.querySelectorAll("#oresults input.ocho:checked").forEach(b => { if (b.value !== "-1") selC.set(Number(b.dataset.c), Number(b.value)); });
+  if (!selU.size && !selL.size && !selC.size) return;
+  const nLow = selL.size + [...selC].filter(([ci, oi]) => chs[ci].options[oi].lower).length;
+  if (nLow && !window.confirm(`You selected ${nLow} vehicle(s) whose new mileage is LOWER than the current value. They will be overwritten with the lower value. Continue?`)) return;
   $("oapply").disabled = true; $("ogo").disabled = true;
   try {
     oilStatus("Re-checking " + lastOil.name + " before writing...");
@@ -938,14 +1043,21 @@ async function oilApply() {
     };
     resolve(ups, selU, fresh.updates);
     resolve(lows, selL, fresh.lowers);
+    const fch = new Map(fresh.choices.map(c => [c.vehicle, c]));
+    chs.forEach((c, i) => {
+      if (!selC.has(i)) { c.status = "skipped"; return; }
+      const opt = c.options[selC.get(i)], f = fch.get(c.vehicle);
+      const fo = f && f.cell === c.cell && f.old === c.old ? f.options.find(o => o.mileage === opt.mileage && o.date === opt.date && o.car === opt.car) : null;
+      if (fo) { c.status = "done"; c.chosen = opt; todo.push({ vehicle: c.vehicle, cell: c.cell, next: opt.mileage }); } else c.status = "changed";
+    });
     if (todo.length) { oilStatus(`Writing ${todo.length} updates to ${lastOil.name}...`); await writeUpdates(lastOil.w, wh.q, todo); }
     lastOil.applied = true;
-    const changed = ups.concat(lows).filter(u => u.status === "changed").length;
+    const changed = ups.concat(lows, chs).filter(u => u.status === "changed").length;
     oilStatus(`Done. ${todo.length} updated.` + (changed ? ` ${changed} not updated because the sheet changed since the preview - run the preview again.` : ""));
     oilRender();
   } catch (e) {
     console.error(e);
-    ups.concat(lows).forEach(u => delete u.status);
+    ups.concat(lows, chs).forEach(u => { delete u.status; delete u.chosen; });
     oilStatus("");
     $("oresults").insertAdjacentHTML("afterbegin", `<div class="banner err"><b>Stopped:</b> ${esc(e.message)}<br>Some updates may already have been written. Run the preview again to check.</div>`);
     if ($("oapply")) $("oapply").disabled = false;
@@ -956,14 +1068,17 @@ function oilDownload() {
   const { name, res } = lastOil;
   const lab = { done: "UPDATED", skipped: "NOT UPDATED (unticked)", changed: "NOT UPDATED (sheet changed)" };
   const labL = { done: "UPDATED (lower value, ticked)", skipped: "NOT UPDATED (lower than current)", changed: "NOT UPDATED (sheet changed)" };
-  const rows = [["Category", "Type", "Vehicle", "Before", "After", "Difference", "Cell", "Details"]];
-  res.errors.forEach(e => rows.push(["ERROR", e.type, e.vehicle, "", "", "", "", e.detail]));
-  res.warnings.forEach(w => rows.push(["CHECK", "", w.vehicle, "", "", "", "", w.detail]));
-  res.updates.forEach(u => rows.push([lab[u.status] || "WOULD UPDATE", "", u.vehicle, u.old, u.next, u.diff, u.cell, u.note]));
-  res.lowers.forEach(u => rows.push([labL[u.status] || "LOWER THAN CURRENT", "", u.vehicle, u.old, u.next, u.diff, u.cell, u.note]));
-  res.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.old, "", "", u.cell, u.detail]));
-  res.noEntry.forEach(u => rows.push(["NO ENTRY", "", u.vehicle, "", "", "", "", u.detail]));
-  res.notInFile.forEach(u => rows.push(["NOT IN FILE", "", u.vehicle, "", "", "", "", u.detail]));
+  const rows = [["Category", "Type", "Vehicle", "Before", "After", "Difference", "New KM", "Replaced on", "Cell", "Details"]];
+  res.errors.forEach(e => rows.push(["ERROR", e.type, e.vehicle, "", "", "", "", "", "", e.detail]));
+  res.warnings.forEach(w => rows.push(["CHECK", "", w.vehicle, "", "", "", "", "", "", w.detail]));
+  res.updates.forEach(u => rows.push([lab[u.status] || "WOULD UPDATE", "", u.vehicle, u.old, u.next, u.diff, u.newKm, u.date, u.cell, u.note]));
+  res.lowers.forEach(u => rows.push([labL[u.status] || "LOWER THAN CURRENT", "", u.vehicle, u.old, u.next, u.diff, u.newKm, u.date, u.cell, u.note]));
+  res.choices.forEach(c => c.options.forEach(o => rows.push([
+    c.status === "done" ? (c.chosen === o ? "UPDATED (chosen)" : "NOT USED") : c.status === "changed" ? "NOT UPDATED (sheet changed)" : c.status === "skipped" ? "NOT USED" : "NEEDS YOUR CHOICE",
+    "", c.vehicle, c.old, o.mileage, o.diff, o.newKm, o.date, c.cell, `Car ${o.car}` + (o.recent ? " - most recent" : "") + (o.highest ? " - highest mileage" : "")])));
+  res.unchanged.forEach(u => rows.push(["UNCHANGED", "", u.vehicle, u.old, "", "", "", "", u.cell, u.detail]));
+  res.noEntry.forEach(u => rows.push(["NO ENTRY", "", u.vehicle, "", "", "", "", "", "", u.detail]));
+  res.notInFile.forEach(u => rows.push(["NOT IN FILE", "", u.vehicle, "", "", "", "", "", "", u.detail]));
   const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv" }));
