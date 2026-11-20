@@ -1017,12 +1017,15 @@ function oilOnChange(e) {
   const id = e.target.id;
   if (id === "oall") document.querySelectorAll("#oresults input.ochk").forEach(b => b.checked = e.target.checked);
   if (id === "olall") document.querySelectorAll("#oresults input.olow").forEach(b => b.checked = e.target.checked);
+  if (id === "opall") { document.querySelectorAll("#oresults input.opchk").forEach(b => b.checked = e.target.checked); return printCount(); }
+  if (e.target.classList.contains("opchk")) return printCount();
   if (id === "oall" || id === "olall" || e.target.classList.contains("ochk") || e.target.classList.contains("olow") || e.target.classList.contains("ocho")) oilCount();
 }
 
 function oilOnClick(e) {
   if (e.target.id === "odl") return oilDownload();
   if (e.target.id === "oapply") return oilApply();
+  if (e.target.id === "opgo") return printSelected();
 }
 
 /* Writes only the ticked vehicles. The sheet is re-read first and a vehicle is written only if its
@@ -1135,6 +1138,9 @@ function printTable(list) {
   return h + "</tbody></table>";
 }
 
+let printList = null, printWh = "";   // rows found for printing, and the warehouse name
+
+/* Step 1: find the items that need replacing and show them with a tick box each. Nothing is printed yet. */
 async function oilPrint() {
   const name = $("owh").value, w = CONFIG.WAREHOUSES[name];
   $("oprint").disabled = true;
@@ -1142,17 +1148,38 @@ async function oilPrint() {
     oilStatus("Loading " + name + "...");
     const wh = await loadSheet(w);
     const list = oilDueList(wh.rows);
-    if (!list.length) { oilStatus(`No maintenance is needed in ${name} right now. Nothing to print.`); return; }
-    const nVeh = new Set(list.map(x => x.vehicle)).size;
-    $("printArea").innerHTML = `<h2>Regular maintenance - ${esc(name)}</h2>
-      <div class="meta">${esc(new Date().toLocaleDateString("en-GB"))} - ${list.length} item${list.length > 1 ? "s" : ""} on ${nVeh} vehicle${nVeh > 1 ? "s" : ""}</div>` +
-      printTable(list);
-    oilStatus(`${list.length} item(s) found. Opening the print window...`);
-    setTimeout(() => window.print(), 150);
+    $("oresults").innerHTML = "";
+    if (!list.length) { printList = null; oilStatus(`No maintenance is needed in ${name} right now. Nothing to print.`); return; }
+    printList = list; printWh = name;
+    let h = `<div class="card"><h2>Print list - ${esc(name)}</h2><p class="hint">Untick what you don't want on the printout.</p>
+      <table><thead><tr><th><input type="checkbox" id="opall" checked></th><th>Vehicle</th><th>Item to change</th><th>Current mileage</th><th>${esc(CONFIG.PRINT_LABEL)}</th></tr></thead><tbody>`;
+    list.forEach((r, i) => { h += `<tr><td><input type="checkbox" class="opchk" data-i="${i}" checked></td><td>${esc(r.vehicle)}</td><td>${esc(r.item)}</td><td>${esc(r.mileage)}</td><td>${esc(r.eValue)}</td></tr>`; });
+    h += `</tbody></table><div style="margin-top:12px"><button id="opgo"></button></div></div>`;
+    $("oresults").innerHTML = h;
+    printCount();
+    oilStatus(`${list.length} item(s) found. Untick any you don't want, then press Print.`);
   } catch (e) {
     console.error(e);
     oilStatus("Stopped: " + e.message);
   } finally { $("oprint").disabled = false; }
+}
+
+function printCount() {
+  const btn = $("opgo"); if (!btn) return;
+  const boxes = [...document.querySelectorAll("#oresults input.opchk")], n = boxes.filter(b => b.checked).length;
+  btn.textContent = `Print selected (${n})`; btn.disabled = n === 0;
+  const head = $("opall"); if (head) { head.checked = n === boxes.length; head.indeterminate = n > 0 && n < boxes.length; }
+}
+
+/* Step 2: print only the ticked rows. */
+function printSelected() {
+  if (!printList) return;
+  const list = [...document.querySelectorAll("#oresults input.opchk")].filter(b => b.checked).map(b => printList[Number(b.dataset.i)]);
+  if (!list.length) return;
+  const nVeh = new Set(list.map(x => x.vehicle)).size;
+  $("printArea").innerHTML = `<h2>Regular maintenance - ${esc(printWh)}</h2>
+    <div class="meta">${esc(new Date().toLocaleDateString("en-GB"))} - ${list.length} item${list.length > 1 ? "s" : ""} on ${nVeh} vehicle${nVeh > 1 ? "s" : ""}</div>` + printTable(list);
+  setTimeout(() => window.print(), 150);
 }
 
 init();
